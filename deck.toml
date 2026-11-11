@@ -1,0 +1,19 @@
+[package]
+name = "@deckyard/escl"
+version = "0.1.0"
+description = "Network document scanners over eSCL (AirScan, Mopria): find them, read what they offer, scan to pages, files or PDF"
+license = "LGPL-3.0-only"
+authors = ["mplx <mplx@jennifer-lang.dev>"]
+# The deck talks to a scanner over HTTP or HTTPS, so it opens sockets. No
+# `exec`, no `sql`.
+capabilities = ["net"]
+keywords = ["escl", "airscan", "mopria", "scanner", "scan", "sane", "airprint", "homelab"]
+
+[package.urls]
+deck = "https://raw.githubusercontent.com/deckyard/deck-escl/main/deck.toml"
+homepage = "https://github.com/deckyard/deck-escl"
+manual = "https://deckyard.github.io/deck-escl/"
+
+# Only the default binary: `jennifer-tiny` has no `net` capability.
+[engines]
+jennifer = ">=0.26.0"
