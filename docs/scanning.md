@@ -30,15 +30,28 @@ def files as list of string init escl.scanToFiles($s, $st, "/srv/scans", "invoic
 `scanToFiles` never overwrites: it refuses before the job if the first name
 is taken, and creates every file exclusively, so a name taken (or a link
 planted) during the job stops it; the error then names the files already
-written. `scan` holds every page in memory; for long feeder jobs prefer
-`scanToFiles`. Both stop a job after `Options.maxPages` pages (500), so a
-scanner that never ends a job cannot fill memory or disk. A format the scanner can produce as one multi-page document (often
+written. `scan` holds every page in memory and returns them only when the
+whole job succeeds: a paper jam on page 40 loses the 39 before it. For
+feeder jobs prefer `scanToFiles` or `scanpdf.scanToPdf`, which keep the
+pages already scanned, or `scanEach`, which hands each one over as it
+arrives. A platen job gives one page: the deck does not ask the scanner for
+a second.
+A feeder job is refused before it starts when the scanner reports the feeder
+empty, jammed, open or misfed (`ScannerAdfJam`, `ScannerAdfHatchOpen`, ...). Every whole-job call (`scan`, `scanEach`, `scanToFiles`,
+`scanpdf.scanToPdf`) stops a job past `Options.maxPages` pages (500) or
+`Options.maxJobBytes` bytes in all (1 GiB), and each page is at most
+`maxPageBytes` (256 MiB); together they bound what a scanner that never ends
+a job can make the deck hold or write. A format the scanner can produce as one multi-page document (often
 `application/pdf` from a feeder) may arrive as a single page.
 
 ## One PDF
 
 `scanpdf.scanToPdf(s, st, path)` scans JPEG (or PNG) pages and binds them
-into one PDF, each page as large as the area scanned; `scanpdf.build(pages,
+into one PDF, each page as large as the area scanned (at most 200 inches a
+side). Nothing is decoded: each image header is read first, and a PNG with
+transparency or interlacing, which would have to be, is refused (scanners
+do not send them), and so is a header too long to be a scanner's (more than
+64 JPEG segments or PNG chunks before the image); `scanpdf.build(pages,
 resolution)` does the binding alone. The JPEG data goes in unchanged, so a
 page is no larger in the PDF than it was from the scanner.
 
@@ -52,7 +65,13 @@ scanpdf.scanToPdf($s, $st, "/srv/scans/letter.pdf");
 
 This works the same on every scanner, unlike asking the scanner for
 `application/pdf`, which not all offer for every input. It holds the whole
-job in memory while binding.
+job in memory while binding, several times over: peak memory is about seven
+times the job's size, so lower `maxJobBytes` (1 GiB by default) where memory
+is tight. The file name is taken, as an empty file, before the scan starts,
+so a wrong directory fails before any paper moves. If the job fails part way
+(a paper jam, a limit) or the pages cannot be bound or written, the pages
+already scanned are kept as `letter-001.jpg`, ... beside it (`letter-2-001.jpg`,
+... when those names are taken) and the error names them.
 
 ## Page by page
 
@@ -79,7 +98,7 @@ request, and the error names what the input does offer:
 | `source` | `escl.PLATEN` | the inputs: `PLATEN` or `FEEDER` |
 | `duplex` | `false` | a duplex feeder |
 | `colorMode` | `"RGB24"` | `Input.colorModes` |
-| `resolution` | `300` | `Input.resolutions` or `Input.resolutionRange` |
+| `resolution` | `300` | `Input.resolutions` or one of `Input.resolutionRanges` |
 | `format` | `"image/jpeg"` | `Input.formats` |
 | `intent` | `""` (none sent) | `Input.intents` |
 | `x`, `y`, `width`, `height` | `0` | the input's size; a 0 width or height reaches to the maximum |
@@ -128,13 +147,36 @@ def first as escl.Page init escl.nextPage($job);
 escl.cancel($job);
 ```
 
+A loop of your own counts each page with `escl.countPage(job, page)`, which
+applies `maxPages` and `maxJobBytes`, and ends with `escl.finish(job)`: it
+fails if the scanner's status lists the job as aborted (a paper jam) or it
+gave no pages, then deletes the finished job on the scanner, as `scan` does.
+A status that cannot be read after the last page does not fail the job, so
+pages already received are not lost to it.
+
+```jennifer
+def job as escl.Job init escl.start($s, $caps, $st);
+while (true) {
+    def p as escl.Page init escl.nextPage($job);
+    if ($p.done) {
+        break;
+    }
+    $job = escl.countPage($job, $p);
+    # use $p
+}
+escl.finish($job);
+```
+
 ## Busy scanners and slow pages
 
 A scanner answers 503 while it is busy, warming up, or still scanning the
 next page. The deck retries every `retryMs`, or after the reply's
 `Retry-After` seconds when that is longer, until `busyWaitMs` has passed (1 s
 and 60 s by default). A page can take a while to arrive at a high
-resolution; each read may stall for `timeoutMs` (120 s). Set them with
+resolution; each read may stall for `timeoutMs` (120 s). That bounds a
+silent scanner, not a slow one: a device sending a byte at a time can stretch
+a transfer indefinitely, so set `deadlineMs` to bound each request as a
+whole. Set them with
 `escl.scannerWith`:
 
 ```jennifer
@@ -151,13 +193,18 @@ protected: on a plain `http` address, where anyone on the network can read
 it, and with `skipVerify`, where anyone can pose as the scanner. Use the
 scanner's `https` address with its certificate pinned in `caCert`, or set
 `allowPlainAuth` to accept the risk. A 401 says whether a login was
-missing or refused.
+missing or refused. A login written into the address (`user:pass@host`) is
+refused, and never echoed in the error.
 
 ## HTTPS
 
 `https://` addresses verify the certificate, which on a scanner is almost
 always self-signed. Give the device's certificate in `caCert` (PEM) to trust
-exactly that one, or set `skipVerify` on a network you trust.
+exactly that one, or set `skipVerify` on a network you trust. A certificate in
+`caCert` must still name the host in the address: one issued to
+`EPSON123456.local` does not verify for `https://192.168.1.50`. Use the name
+the certificate carries, as the scanner announces it (`escl.discover`, a
+`.local` name), or make the device a certificate that lists its address.
 
 ## Image size
 
@@ -166,6 +213,11 @@ fetched: its size in pixels and bytes per row. Not every scanner offers it;
 the call then fails with a clear error.
 
 ## Devices
+
+Every request names the scanner in its `Host` header with the port written
+out (`192.168.1.50:80`): Epson devices refuse a request without it, and the
+others accept it. This needs an interpreter whose `http.j` sends a `Host`
+naming the URL's own host and port as written.
 
 The job URL a scanner returns often names a host or port the client cannot
 reach (`http://NPI6142D.local.:80/...`); the deck keeps only its path and

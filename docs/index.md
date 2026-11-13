@@ -23,10 +23,23 @@ binary, not `jennifer-tiny`.
 Lengths are in the protocol's unit, 1/300 inch: A4 is 2480 x 3508, US Letter
 2550 x 3300. `escl.fromMm(210.0)` converts.
 
-Errors: every failure is an `Error` of kind `"escl"` whose message starts
-with `escl: ` - a setting the scanner does not offer (named, with what it
-does offer), an empty feeder, a refused or aborted job (with the scanner's
-reasons, e.g. a paper jam), an unreachable scanner, a malformed reply.
+Errors: every failure the deck raises is an `Error` of kind `"escl"` whose
+message starts with `escl: ` - a setting the scanner does not offer (named,
+with what it does offer), an empty feeder, a refused or aborted job (with the
+scanner's reasons, e.g. a paper jam), an unreachable scanner, a malformed or
+oversized reply, a job past its page or byte limit. The one exception is an
+error your own `scanEach` handler throws: it reaches you with its own kind,
+and if cancelling the job then fails too, that is added to its message.
+
+Text the deck returns from a scanner (`makeAndModel`, `state`, job reasons,
+a page's `contentType`, discovered names, ...) has every control character
+replaced by `?`, so printing it cannot drive a terminal, and every
+bidirectional-text control and invisible format character too (zero-width
+spaces, line separators, the byte order mark), so a name cannot display
+reversed or hide text; text quoted in an error is cut to 80 characters. A
+text element over 1024 characters, a document over 1 MiB or 10,000
+elements (refused before it is parsed), or a page whose `Content-Type` is
+not a plain `type/subtype`, is an error.
 
 ```jennifer
 try {
@@ -49,7 +62,8 @@ for (def f in escl.discover(2000)) {
 
 Answers are not authenticated (mDNS has no way to): any host on the network
 can announce a scanner, so check `name` and `url` before scanning anything
-sensitive. Names come back with control characters as `?`. The query leaves
+sensitive. Names come back with control characters as `?`. Only answers
+from port 5353 with no error code count. The query leaves
 by the default route's interface, and only IPv4 addresses are read; a scanner on another subnet or VLAN, or behind Wi-Fi client
 isolation, does not answer. Then give the address yourself. A scanner
 announces itself as `_uscan._tcp` (`_uscans._tcp` for HTTPS), with its port

@@ -24,6 +24,7 @@ use lists;
 use maps;
 use math;
 use net;
+use regex;
 use strings;
 use task;
 use time;
@@ -66,15 +67,41 @@ def const USCAN as string init "_uscan._tcp.local";
 def const USCANS as string init "_uscans._tcp.local";
 # More mDNS records than any real network has: discovery stops reading there.
 def const MAX_RECORDS as int init 2000;
+# the most name labels one answer may make the deck decode: a real answer
+# has a few dozen, and pointers let a small packet repeat a long name
+def const MAX_LABELS as int init 512;
 
 def const SCAN_NS as string init "http://schemas.hp.com/imaging/escl/2011/05/03";
 def const PWG_NS as string init "http://www.pwg.org/schemas/2010/12/sm";
-# Capability and status documents are small; a larger one is not eSCL.
-def const MAX_DOC_BYTES as int init 4194304;
+# feeder states that stop a job before it starts
+def const ADF_FAULTS as list of string init [
+    "ScannerAdfJam",
+    "ScannerAdfHatchOpen",
+    "ScannerAdfMispick",
+    "ScannerAdfMultipickDetected",
+    "ScannerAdfInputTrayFailed",
+    "ScannerAdfInputTrayOverloaded",
+    "ScannerAdfDuplexPageTooShort",
+    "ScannerAdfDuplexPageTooLong"
+];
+# Capability and status documents are small (10 to 50 KB); a larger one is
+# not eSCL.
+def const MAX_DOC_BYTES as int init 1048576;
 # Real capability documents have a few hundred elements and lists of a few
 # dozen entries; these bounds keep a hostile document's parse short.
 def const MAX_ELEMENTS as int init 10000;
 def const MAX_ITEMS as int init 256;
+# the longest text an eSCL element holds; a longer one is not an eSCL document
+def const MAX_TEXT as int init 1024;
+# what a control character, a bidirectional-text control that would let text
+# display reversed, or an invisible or line-breaking format character looks
+# like to `regex`
+def const CONTROLS as string init '[\x00-\x1f\x7f-\x9f\x{061c}\x{180e}\x{200b}-\x{200f}' +
+    '\x{2028}-\x{202e}\x{2060}-\x{2069}\x{feff}]';
+# a MIME type without parameters
+def const MEDIA_TYPE as string init '^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$';
+# the characters besides letters and digits a URL path segment may hold
+def const PCHARS as string init "-._~%!$&'()*+,;=:@";
 def const LETTERS as string init "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 /**
@@ -280,12 +307,14 @@ export def struct Settings {
  * @field url {string} the job's absolute URL, no trailing slash
  * @field pages {int} how many pages have been fetched; `scan` counts them, a caller of `nextPage` may too
  * @field bytes {int} how many bytes those pages hold
+ * @field platen {bool} a platen job: one sheet, so `nextPage` ends it once `pages` counts one
  */
 export def struct Job {
     scanner as Scanner,
     url as string,
     pages as int,
-    bytes as int
+    bytes as int,
+    platen as bool
 };
 
 /**
@@ -372,10 +401,12 @@ def struct Records {
  *
  * @field name {string} the dotted name, no trailing dot
  * @field next {int} the offset after the name where it is stored
+ * @field labels {int} the labels decoded, pointers followed
  */
 def struct NameAt {
     name as string,
-    next as int
+    next as int,
+    labels as int
 };
 
 /**
@@ -406,7 +437,8 @@ func fail(message as string) {
 }
 
 /**
- * Text from a device, cut to 80 characters with anything unprintable as `?`,
+ * Text from a device, cut to 80 characters with control and bidirectional-text
+ * characters as `?`,
  * fit for an error message.
  *
  * @param s {string} the text
@@ -415,13 +447,16 @@ func fail(message as string) {
 func clip(s as string) {
     def out as string init "";
     def n as int init 0;
-    for (def c in strings.chars($s)) {
+    def head as string init $s;
+    if (len($head) > 81) {
+        $head = strings.substring($head, 0, 81);
+    }
+    for (def c in strings.chars($head)) {
         if ($n == 80) {
             $out = $out + "...";
             break;
         }
-        def cp as int init convert.toCodepoint($c);
-        if ($cp < 32 or ($cp >= 127 and $cp < 160)) {
+        if (regex.matches(CONTROLS, $c)) {
             $out = $out + "?";
         } else {
             $out = $out + $c;
@@ -433,38 +468,28 @@ func clip(s as string) {
 
 /**
  * Text from the network with every control character as `?`, so printing it
- * cannot drive a terminal. Unlike `clip` it keeps the whole text.
+ * cannot drive a terminal, and every bidirectional-text control too, so it
+ * cannot display reversed. Unlike `clip` it keeps the whole text.
  *
  * @param s {string} the text
  * @return {string} the text, printable
  */
 func printable(s as string) {
-    for (def c in strings.chars($s)) {
-        def cp as int init convert.toCodepoint($c);
-        if ($cp < 32 or ($cp >= 127 and $cp < 160)) {
-            return replaceControls($s);
-        }
-    }
-    return $s;
+    return regex.replace(CONTROLS, $s, "?");
 }
 
 /**
- * `printable`'s slow path.
+ * Text cut to `n` characters, `...` marking a cut.
  *
- * @param s {string} text holding a control character
- * @return {string} the text, each control character as `?`
+ * @param s {string} the text
+ * @param n {int} the most characters kept
+ * @return {string} the text
  */
-func replaceControls(s as string) {
-    def out as list of string init [];
-    for (def c in strings.chars($s)) {
-        def cp as int init convert.toCodepoint($c);
-        if ($cp < 32 or ($cp >= 127 and $cp < 160)) {
-            $out[] = "?";
-        } else {
-            $out[] = $c;
-        }
+func cut(s as string, n as int) {
+    if (len($s) <= $n) {
+        return $s;
     }
-    return strings.join($out, "");
+    return strings.substring($s, 0, $n) + "...";
 }
 
 /**
@@ -565,7 +590,12 @@ export func scannerWith(address as string, options as Options) {
     } elseif (strings.startsWith(strings.lower($rest), "http://")) {
         $rest = strings.substring($rest, 7);
     } elseif (strings.contains($rest, "://")) {
-        fail("the address must be http or https, got " + shown($address));
+        fail("the address must be http or https, got " + shownAddress($address));
+    }
+    # before the path is split off: a password may hold a `/`
+    if (strings.contains($rest, "@")) {
+        fail("put a login in Options.username and Options.password, not in the address " +
+            shownAddress($address));
     }
     def path as string init "/eSCL";
     def hostPort as string init $rest;
@@ -587,18 +617,18 @@ export func scannerWith(address as string, options as Options) {
     if (strings.startsWith($hostPort, "[")) {
         def close as int init strings.indexOf($hostPort, "]");
         if ($close < 0) {
-            fail("unclosed [ in " + shown($address));
+            fail("unclosed [ in " + shownAddress($address));
         }
         $host = strings.substring($hostPort, 0, $close + 1);
         def after as string init strings.substring($hostPort, $close + 1);
         if ($after != "") {
             if (not strings.startsWith($after, ":")) {
-                fail("unexpected text after ] in " + shown($address));
+                fail("unexpected text after ] in " + shownAddress($address));
             }
             $port = strings.substring($after, 1);
         }
         if (not onlyOf(strings.substring($host, 1, len($host) - 1), "0123456789abcdefABCDEF:.")) {
-            fail("malformed IPv6 host in " + shown($address));
+            fail("malformed IPv6 host in " + shownAddress($address));
         }
     } else {
         def colon as int init strings.indexOf($hostPort, ":");
@@ -606,8 +636,8 @@ export func scannerWith(address as string, options as Options) {
             $host = strings.substring($hostPort, 0, $colon);
             $port = strings.substring($hostPort, $colon + 1);
         }
-        if (not onlyOf($host, LETTERS + "-.")) {
-            fail("malformed host in " + shown($address));
+        if (not hostName($host)) {
+            fail("malformed host in " + shownAddress($address));
         }
     }
     def origin as string init $scheme + "://" + $host;
@@ -622,6 +652,46 @@ export func scannerWith(address as string, options as Options) {
         checkLogin($options, $scheme);
     }
     return Scanner{origin: $origin, base: $origin + $path, options: withDefaults($options)};
+}
+
+/**
+ * An address for an error message, quoted as `shown` does, with anything up
+ * to its last `@` left out: a login written into it is not echoed.
+ *
+ * @param address {string} the address
+ * @return {string} the address, quoted
+ */
+func shownAddress(address as string) {
+    def at as int init strings.lastIndexOf($address, "@");
+    if ($at < 0) {
+        return shown($address);
+    }
+    return shown("...@" + strings.substring($address, $at + 1));
+}
+
+/**
+ * Whether `host` is a host name or IPv4 address: dot-separated labels of
+ * letters, digits and `-`, none empty or starting or ending with `-`. One
+ * trailing dot is allowed.
+ *
+ * @param host {string} the host
+ * @return {bool} whether it is one
+ */
+func hostName(host as string) {
+    def h as string init $host;
+    if (strings.endsWith($h, ".")) {
+        $h = strings.substring($h, 0, len($h) - 1);
+    }
+    if ($h == "" or len($h) > 253) {
+        return false;
+    }
+    for (def label in strings.split($h, ".")) {
+        if (not onlyOf($label, LETTERS + "-") or len($label) > 63 or
+            strings.startsWith($label, "-") or strings.endsWith($label, "-")) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
@@ -712,7 +782,7 @@ func jobUrl(s as Scanner, location as string) {
         fail("the scanner gave no usable job location: " + shown($location));
     }
     for (def seg in strings.split($loc, "/")) {
-        if ($seg == "." or $seg == ".." or not onlyOf($seg, LETTERS + "-._~%")) {
+        if ($seg == "." or $seg == ".." or not onlyOf($seg, LETTERS + PCHARS)) {
             fail("the scanner gave no usable job location: " + shown($location));
         }
     }
@@ -733,13 +803,7 @@ func jobUrl(s as Scanner, location as string) {
  * @throws {Error} kind "escl" if the request fails
  */
 func send(s as Scanner, method as string, url as string, body as string, maxBytes as int) {
-    def headers as map of string to string init {"Accept": "*/*"};
-    if ($s.options.username != "") {
-        $headers["Authorization"] = http.basic($s.options.username, $s.options.password);
-    }
-    if ($body != "") {
-        $headers["Content-Type"] = "text/xml";
-    }
+    def headers as map of string to string init requestHeaders($s, $url, $body);
     def tls as http.TlsOptions init http.TlsOptions{
         skipVerify: $s.options.skipVerify,
         caCert: $s.options.caCert
@@ -784,6 +848,50 @@ func send(s as Scanner, method as string, url as string, body as string, maxByte
         retryAfterMs: $retry,
         body: $r.body
     };
+}
+
+/**
+ * The headers of a request.
+ *
+ * @param s {Scanner} the scanner
+ * @param url {string} the absolute URL
+ * @param body {string} the request body, `""` for none
+ * @return {map of string to string} the headers
+ */
+func requestHeaders(s as Scanner, url as string, body as string) {
+    # the port always written out: Epson devices refuse a request without it
+    def headers as map of string to string init {"Accept": "*/*", "Host": authority($url)};
+    if ($s.options.username != "") {
+        $headers["Authorization"] = http.basic($s.options.username, $s.options.password);
+    }
+    if ($body != "") {
+        $headers["Content-Type"] = "text/xml";
+    }
+    return $headers;
+}
+
+/**
+ * The `host:port` of an absolute URL, the port written out even when it is
+ * the scheme's default.
+ *
+ * @param url {string} an `http://` or `https://` URL
+ * @return {string} the host and port
+ */
+func authority(url as string) {
+    def port as string init "80";
+    if (strings.startsWith(strings.lower($url), "https://")) {
+        $port = "443";
+    }
+    def rest as string init strings.substring($url, strings.indexOf($url, "://") + 3);
+    def slash as int init strings.indexOf($rest, "/");
+    if ($slash >= 0) {
+        $rest = strings.substring($rest, 0, $slash);
+    }
+    def close as int init strings.lastIndexOf($rest, "]");
+    if (strings.indexOf(strings.substring($rest, $close + 1), ":") >= 0) {
+        return $rest;
+    }
+    return $rest + ":" + $port;
 }
 
 /**
@@ -933,11 +1041,16 @@ func refusal(s as Scanner, r as Reply) {
  * @throws {Error} kind "escl" if it is malformed or another document
  */
 func decodeAs(text as string, name as string) {
+    # every element takes at least one `<`; counted before the parser builds
+    # a tree, which costs far more than the text
+    if (strings.count($text, "<") > 2 * MAX_ELEMENTS + 16) {
+        fail("{$name} has more than {MAX_ELEMENTS} elements; not an eSCL document");
+    }
     def root as xml.Value;
     try {
         $root = xml.decode($text);
     } catch (e) {
-        fail("{$name}: malformed XML: {$e.message}");
+        fail("{$name}: malformed XML: " + cut(printable($e.message), 200));
     }
     if (local($root) != $name) {
         fail("expected a {$name} document, got <" + clip(xml.tag($root)) + ">");
@@ -955,18 +1068,18 @@ func decodeAs(text as string, name as string) {
  * @throws {Error} kind "escl" past `MAX_ELEMENTS` elements
  */
 func checkElements(root as xml.Value, name as string) {
-    def pending as list of xml.Value init [$root];
-    def seen as int init 0;
-    while (len($pending) > 0) {
-        def node as xml.Value init $pending[len($pending) - 1];
-        $pending = $pending[..len($pending) - 1];
-        $seen = $seen + 1;
-        if ($seen > MAX_ELEMENTS) {
-            fail("{$name} has more than {MAX_ELEMENTS} elements; not an eSCL document");
+    # breadth-first over a list that only grows: no copies, and it stops
+    # growing once past the budget
+    def queue as list of xml.Value init [$root];
+    def at as int init 0;
+    while ($at < len($queue)) {
+        for (def c in xml.children($queue[$at])) {
+            if (len($queue) >= MAX_ELEMENTS) {
+                fail("{$name} has more than {MAX_ELEMENTS} elements; not an eSCL document");
+            }
+            $queue[] = $c;
         }
-        for (def c in xml.children($node)) {
-            $pending[] = $c;
-        }
+        $at = $at + 1;
     }
 }
 
@@ -1078,7 +1191,23 @@ func textAt(node as xml.Value, name as string) {
     if (len($found) == 0) {
         return "";
     }
-    return printable(strings.trim(xml.text($found[0])));
+    return deviceText($found[0], $name);
+}
+
+/**
+ * An element's trimmed text, control characters as `?`.
+ *
+ * @param el {xml.Value} the element
+ * @param name {string} its local name, for the error
+ * @return {string} the text
+ * @throws {Error} kind "escl" past `MAX_TEXT` characters
+ */
+func deviceText(el as xml.Value, name as string) {
+    def t as string init strings.trim(xml.text($el));
+    if (len($t) > MAX_TEXT) {
+        fail("<{$name}> holds more than {MAX_TEXT} characters; not an eSCL document");
+    }
+    return printable($t);
 }
 
 /**
@@ -1108,7 +1237,7 @@ func intAt(node as xml.Value, name as string, absent as int) {
 func textsAt(node as xml.Value, name as string) {
     def texts as list of string init [];
     for (def c in kids($node, $name)) {
-        def t as string init printable(strings.trim(xml.text($c)));
+        def t as string init deviceText($c, $name);
         if ($t != "") {
             $texts[] = $t;
         }
@@ -1728,7 +1857,7 @@ export func settingsXml(caps as Capabilities, st as Settings) {
  * @param caps {Capabilities} its capabilities, from `capabilities`
  * @param st {Settings} what to scan
  * @return {Job} the job, ready for `nextPage`
- * @throws {Error} kind "escl" if the settings are not offered, the feeder is empty, or the scanner refuses the job
+ * @throws {Error} kind "escl" if the settings are not offered, the feeder is empty or faulty, or the scanner refuses the job
  */
 export func start(s as Scanner, caps as Capabilities, st as Settings) {
     def body as string init settingsXml($caps, $st);
@@ -1736,6 +1865,9 @@ export func start(s as Scanner, caps as Capabilities, st as Settings) {
         def now as Status init status($s);
         if ($now.adfState == "ScannerAdfEmpty") {
             fail("the feeder is empty");
+        }
+        if (lists.contains(ADF_FAULTS, $now.adfState)) {
+            fail("the feeder reports " + $now.adfState + "; clear it and try again");
         }
     }
     def r as Reply init sendPatiently($s, "POST", $s.base + "/ScanJobs", $body, MAX_DOC_BYTES);
@@ -1749,7 +1881,17 @@ export func start(s as Scanner, caps as Capabilities, st as Settings) {
     if ($r.status != 201 and $r.status != 200) {
         fail("the scanner refused the job: " + refusal($s, $r));
     }
-    return Job{scanner: $s, url: jobUrl($s, $r.location), pages: 0, bytes: 0};
+    def url as string init "";
+    try {
+        $url = jobUrl($s, $r.location);
+    } catch (e) {
+        throw Error{
+            kind: "escl",
+            message: $e.message +
+                "; the job was created and cannot be cancelled, so the scanner may stay busy until it gives up on it"
+        };
+    }
+    return Job{scanner: $s, url: $url, pages: 0, bytes: 0, platen: $st.source == PLATEN};
 }
 
 /**
@@ -1769,7 +1911,8 @@ func mediaType(contentType as string) {
 
 /**
  * Fetch the job's next page. A 404 means there are no more: the page comes
- * back with `done` true. A page that is not ready (503) is waited for, up to
+ * back with `done` true. A platen job is done once `pages` counts one, without
+ * asking again. A page that is not ready (503) is waited for, up to
  * `busyWaitMs`.
  *
  * @param job {Job} the job
@@ -1777,6 +1920,11 @@ func mediaType(contentType as string) {
  * @throws {Error} kind "escl" if the request fails or the scanner answers otherwise
  */
 export func nextPage(job as Job) {
+    if ($job.platen and $job.pages >= 1) {
+        # the platen holds one sheet: there is no second page to ask for
+        def none as bytes;
+        return Page{done: true, contentType: "", data: $none};
+    }
     def r as Reply init sendPatiently(
         $job.scanner,
         "GET",
@@ -1797,7 +1945,11 @@ export func nextPage(job as Job) {
     if (len($r.body) == 0) {
         fail("page {$n} is empty");
     }
-    return Page{done: false, contentType: mediaType($r.contentType), data: $r.body};
+    def kind as string init mediaType($r.contentType);
+    if ($kind != "" and not regex.matches(MEDIA_TYPE, $kind)) {
+        fail("page {$n} has a malformed Content-Type: " + shown($r.contentType));
+    }
+    return Page{done: false, contentType: $kind, data: $r.body};
 }
 
 /**
@@ -1816,7 +1968,7 @@ export func cancel(job as Job) {
 
 /**
  * Cancel a job after a failure. The error that led here is the one to
- * report; a failure to cancel is added to its message.
+ * report, its kind kept; a failure to cancel is added to its message.
  *
  * @param job {Job} the job
  * @param err {Error} the error that stopped the job
@@ -1832,42 +1984,84 @@ func abandon(job as Job, err as Error) {
 }
 
 /**
- * Check how a job ended, from the scanner's status. A job the status no
- * longer lists is taken as finished.
+ * The path of a URI: as given when it is a path, else what follows its
+ * scheme and authority (`""` if nothing does).
+ *
+ * @param uri {string} the URI
+ * @return {string} the path
+ */
+func uriPath(uri as string) {
+    def u as string init strings.trim($uri);
+    def lower as string init strings.lower($u);
+    if (not strings.startsWith($lower, "http://") and not strings.startsWith($lower, "https://")) {
+        return $u;
+    }
+    def at as int init strings.indexOf($u, "/", strings.indexOf($u, "//") + 2);
+    if ($at < 0) {
+        return "";
+    }
+    return strings.substring($u, $at);
+}
+
+/**
+ * Close a job after its last page: check how it ended, from the scanner's
+ * status, then let the scanner forget it (a `DELETE`, as other eSCL clients
+ * send; a refusal is ignored). Only a status listing the job as aborted or
+ * cancelled fails it: a job the status no longer lists, or a status that
+ * cannot be read, leaves the pages as they came. For a loop of your own over
+ * `nextPage` and `countPage`.
  *
  * @param job {Job} the job, after its last page, `pages` counted
  * @throws {Error} kind "escl" if the scanner aborted or cancelled it, or it gave no pages
  */
-func finished(job as Job) {
+export func finish(job as Job) {
     def path as string init bare(strings.substring($job.url, len($job.scanner.origin)));
-    def st as Status init status($job.scanner);
-    for (def j in $st.jobs) {
-        def same as bool init $j.uri != "" and bare($j.uri) == $path;
-        if (not $same and $j.uuid != "") {
-            $same = strings.endsWith($path, "/" + $j.uuid);
-        }
-        if ($same and ($j.state == "Aborted" or $j.state == "Canceled")) {
-            def why as string init "";
-            if (len($j.reasons) > 0) {
-                $why = " (" + clip(strings.join($j.reasons, ", ")) + ")";
+    def st as Status;
+    def known as bool init true;
+    try {
+        $st = status($job.scanner);
+    } catch (e) {
+        $known = false;
+    }
+    if ($known) {
+        for (def j in $st.jobs) {
+            def same as bool init $j.uri != "" and bare(uriPath($j.uri)) == $path;
+            if (not $same and $j.uuid != "") {
+                $same = strings.endsWith($path, "/" + $j.uuid);
             }
-            if ($st.adfState != "" and $st.adfState != "ScannerAdfEmpty" and
-                $st.adfState != "ScannerAdfLoaded") {
-                $why = $why + ", feeder: " + clip($st.adfState);
+            if ($same and ($j.state == "Aborted" or $j.state == "Canceled")) {
+                def why as string init "";
+                if (len($j.reasons) > 0) {
+                    $why = " (" + clip(strings.join($j.reasons, ", ")) + ")";
+                }
+                if ($st.adfState != "" and $st.adfState != "ScannerAdfEmpty" and
+                    $st.adfState != "ScannerAdfLoaded") {
+                    $why = $why + ", feeder: " + clip($st.adfState);
+                }
+                fail("the scanner " + strings.lower($j.state) +
+                    " the job after {$job.pages} page(s)" +
+                    $why);
             }
-            fail("the scanner " + strings.lower($j.state) + " the job after {$job.pages} page(s)" +
-                $why);
         }
     }
     if ($job.pages == 0) {
         fail("the scanner returned no pages");
     }
+    try {
+        cancel($job);
+    } catch (e) {
+        # the pages are in; a scanner that will not forget the job keeps it
+        return;
+    }
 }
 
 /**
  * Scan: read the capabilities, check the settings, run the job and return
- * every page. A feeder job gives a page per side scanned. If anything fails
- * the job is cancelled; a job the scanner aborts (a paper jam) is an error.
+ * every page. A feeder job gives a page per side scanned, a platen job one.
+ * If anything fails the job is cancelled and the pages fetched are dropped;
+ * a job the scanner aborts (a paper jam) is an error. For long feeder jobs
+ * use `scanToFiles`, `scanEach` or `scanpdf.scanToPdf`, which keep or hand
+ * over the pages already scanned.
  *
  * @param s {Scanner} the scanner
  * @param st {Settings} what to scan
@@ -1889,7 +2083,7 @@ export func scan(s as Scanner, st as Settings) {
             $job = countPage($job, $p);
             $pages[] = $p;
         }
-        finished($job);
+        finish($job);
     } catch (e) {
         throw abandon($job, $e);
     }
@@ -1929,7 +2123,8 @@ export func imageInfo(job as Job) {
  * Scan, handing each page to `handler` as it arrives instead of keeping it:
  * `handler(page as Page, n as int)`, `n` counting from 1, its result ignored.
  * An error the handler throws stops the job, which is cancelled, and comes
- * back to the caller.
+ * back to the caller with its kind; if cancelling fails too, that is added to
+ * its message.
  *
  * @param s {Scanner} the scanner
  * @param st {Settings} what to scan
@@ -1949,7 +2144,7 @@ export func scanEach(s as Scanner, st as Settings, handler as func) {
             $job = countPage($job, $p);
             $handler($p, $job.pages);
         }
-        finished($job);
+        finish($job);
     } catch (e) {
         throw abandon($job, $e);
     }
@@ -1958,14 +2153,14 @@ export func scanEach(s as Scanner, st as Settings, handler as func) {
 
 /**
  * The job with one more page counted, refusing a page past `maxPages` or
- * past `maxJobBytes` in all.
+ * past `maxJobBytes` in all. For a loop of your own over `nextPage`.
  *
  * @param job {Job} the job, pages and bytes counted so far
  * @param p {Page} the page just fetched
  * @return {Job} the job with the page counted
  * @throws {Error} kind "escl" if the page goes over either limit
  */
-func countPage(job as Job, p as Page) {
+export func countPage(job as Job, p as Page) {
     def o as Options init $job.scanner.options;
     if ($job.pages >= $o.maxPages) {
         fail("the job gave more than {$o.maxPages} pages; raise Options.maxPages for longer jobs");
@@ -2030,17 +2225,48 @@ export func extension(contentType as string) {
 }
 
 /**
+ * The file extension for a page: from its type, or from its first bytes when
+ * the scanner sent no usable type.
+ *
+ * @param p {Page} the page
+ * @return {string} `jpg`, `png`, `pdf`, `tif` or `bin`
+ */
+export func pageExtension(p as Page) {
+    def ext as string init extension($p.contentType);
+    if ($ext != "bin") {
+        return $ext;
+    }
+    def d as bytes init $p.data;
+    if (len($d) >= 3 and $d[0] == 255 and $d[1] == 216 and $d[2] == 255) {
+        return "jpg";
+    }
+    if (len($d) >= 8 and $d[0] == 137 and $d[1] == 80 and $d[2] == 78 and $d[3] == 71) {
+        return "png";
+    }
+    if (len($d) >= 5 and $d[0] == 37 and $d[1] == 80 and $d[2] == 68 and $d[3] == 70) {
+        return "pdf";
+    }
+    if (len($d) >= 4 and
+        (($d[0] == 73 and $d[1] == 73 and $d[2] == 42 and $d[3] == 0) or
+        ($d[0] == 77 and $d[1] == 77 and $d[2] == 0 and $d[3] == 42))) {
+        return "tif";
+    }
+    return "bin";
+}
+
+/**
  * The file a page is written to.
  *
  * @param dir {string} the directory
  * @param stem {string} the stem
  * @param n {int} the page number, from 1
  * @param ext {string} the extension
+ * @param width {int} the digits a page number is padded to
  * @return {string} the path
  */
-func fileName(dir as string, stem as string, n as int, ext as string) {
+func fileName(dir as string, stem as string, n as int, ext as string, width as int) {
     def num as string init convert.toString($n);
-    while (len($num) < 3) {
+    while (len($num) < $width) {
         $num = "0" + $num;
     }
     def sep as string init "/";
@@ -2072,7 +2298,12 @@ export func scanToFiles(s as Scanner, st as Settings, dir as string, stem as str
         fail("no such directory: " + shown($dir));
     }
     def caps as Capabilities init capabilities($s);
-    def first as string init fileName($dir, $stem, 1, extension($st.format));
+    # wide enough for the last page allowed, so the names sort in page order
+    def width as int init len(convert.toString($s.options.maxPages));
+    if ($width < 3) {
+        $width = 3;
+    }
+    def first as string init fileName($dir, $stem, 1, extension($st.format), $width);
     if (fs.exists($first)) {
         fail("will not overwrite " + shown($first));
     }
@@ -2085,11 +2316,11 @@ export func scanToFiles(s as Scanner, st as Settings, dir as string, stem as str
                 break;
             }
             $job = countPage($job, $p);
-            def path as string init fileName($dir, $stem, $job.pages, extension($p.contentType));
+            def path as string init fileName($dir, $stem, $job.pages, pageExtension($p), $width);
             writeFresh($path, $p.data);
             $written[] = $path;
         }
-        finished($job);
+        finish($job);
     } catch (e) {
         def err as Error init abandon($job, $e);
         if (len($written) > 0) {
@@ -2148,6 +2379,7 @@ func discoverAt(target as string, timeoutMs as int) {
         fail("mDNS query to {$target}: " + clip($e.message));
     }
     def recs as Records init Records{ptrs: [], srvs: {}, txts: {}, addrs: {}, count: 0};
+    def port as string init strings.substring($target, strings.lastIndexOf($target, ":") + 1);
     def began as time.Time init time.now();
     while (true) {
         def left as int init $timeoutMs - time.milliseconds(time.sub(time.now(), $began));
@@ -2164,7 +2396,8 @@ func discoverAt(target as string, timeoutMs as int) {
             }
             fail("mDNS: " + clip($e.message));
         }
-        if ($d.truncated) {
+        # an answer comes from the port asked (5353); anything else is not mDNS
+        if ($d.truncated or not strings.endsWith($d.peer, ":" + $port)) {
             continue;
         }
         if ($recs.count >= MAX_RECORDS) {
@@ -2299,10 +2532,58 @@ func readName(msg as bytes, at as int) {
         if ($total > 255) {
             fail("mDNS: a name is too long");
         }
-        $labels[] = printable(utf8At($msg, $pos + 1, $pos + 1 + $l));
+        $labels[] = utf8At($msg, $pos + 1, $pos + 1 + $l);
         $pos = $pos + 1 + $l;
     }
-    return NameAt{name: strings.join($labels, "."), next: $next};
+    return NameAt{name: printable(strings.join($labels, ".")), next: $next, labels: len($labels)};
+}
+
+/**
+ * The labels one answer has decoded, with this name's added.
+ *
+ * @param labels {int} the labels so far
+ * @param n {NameAt} the name just read
+ * @return {int} the total
+ * @throws {Error} kind "escl" past `MAX_LABELS`
+ */
+func spend(labels as int, n as NameAt) {
+    if ($labels + $n.labels > MAX_LABELS) {
+        fail("mDNS: an answer with more than {MAX_LABELS} name labels");
+    }
+    return $labels + $n.labels;
+}
+
+/**
+ * Where the name at `at` ends, without decoding it: its labels are stepped
+ * over, a compression pointer ends it.
+ *
+ * @param msg {bytes} the message
+ * @param at {int} where the name starts
+ * @return {int} the offset after it
+ * @throws {Error} kind "escl" if it runs past the message or a label is malformed
+ */
+func skipName(msg as bytes, at as int) {
+    def pos as int init $at;
+    while (true) {
+        if ($pos < 0 or $pos >= len($msg)) {
+            fail("mDNS: a name runs past the message");
+        }
+        def l as int init $msg[$pos];
+        if ($l == 0) {
+            return $pos + 1;
+        }
+        if ($l >= 192) {
+            if ($pos + 2 > len($msg)) {
+                fail("mDNS: a name runs past the message");
+            }
+            return $pos + 2;
+        }
+        if ($l >= 64) {
+            fail("mDNS: a malformed label");
+        }
+        $pos = $pos + 1 + $l;
+    }
+    return $pos;
 }
 
 /**
@@ -2359,36 +2640,57 @@ func txtValue(txt as string, key as string) {
  * @throws {Error} kind "escl" if the message is malformed
  */
 func absorb(recs as Records, msg as bytes) {
-    if (len($msg) < 12 or u16($msg, 2) < 32768) {
-        # too short, or a query rather than an answer
+    if (len($msg) < 12) {
+        return $recs;
+    }
+    def flags as int init u16($msg, 2);
+    # a query rather than an answer, an opcode other than QUERY, or an error
+    # code: RFC 6762 section 18 says to ignore it
+    if ($flags < 32768 or $flags % 32768 >= 2048 or $flags % 16 != 0) {
         return $recs;
     }
     def counts as int init u16($msg, 6) + u16($msg, 8) + u16($msg, 10);
     def off as int init 12;
+    def labels as int init 0;
     for (def i in 0..u16($msg, 4)) {
-        $off = readName($msg, $off).next + 4;
+        $off = skipName($msg, $off) + 4;
     }
     for (def i in 0..$counts) {
-        def owner as NameAt init readName($msg, $off);
-        def at as int init $owner.next;
+        # every record counts, and only the four kinds read have their owner
+        # decoded: others cost a skip
+        $recs.count = $recs.count + 1;
+        if ($recs.count > MAX_RECORDS) {
+            return $recs;
+        }
+        def ownerAt as int init $off;
+        def at as int init skipName($msg, $off);
         def kind as int init u16($msg, $at);
         def data as int init $at + 10;
         def end as int init $data + u16($msg, $at + 8);
         if ($end > len($msg)) {
             fail("mDNS: a record runs past the message");
         }
-        def key as string init strings.lower($owner.name);
-        if ($kind == 12 or $kind == 33 or $kind == 16 or $kind == 1) {
-            $recs.count = $recs.count + 1;
+        $off = $end;
+        if ($kind != 12 and $kind != 33 and $kind != 16 and $kind != 1) {
+            continue;
         }
+        def owner as NameAt init readName($msg, $ownerAt);
+        $labels = spend($labels, $owner);
+        def key as string init strings.lower($owner.name);
         match ($kind) {
-            when 12 { $recs.ptrs[] = $key + "\t" + readName($msg, $data).name; }
+            when 12 {
+                def ptr as NameAt init readName($msg, $data);
+                $labels = spend($labels, $ptr);
+                $recs.ptrs[] = $key + "\t" + $ptr.name;
+            }
             when 33 {
                 if ($end - $data < 7) {
                     fail("mDNS: an SRV record is too short");
                 }
+                def target as NameAt init readName($msg, $data + 6);
+                $labels = spend($labels, $target);
                 $recs.srvs[$key] = Srv{
-                    target: strings.lower(readName($msg, $data + 6).name),
+                    target: strings.lower($target.name),
                     port: u16($msg, $data + 4)
                 };
             }
@@ -2399,7 +2701,6 @@ func absorb(recs as Records, msg as bytes) {
                 }
             }
         }
-        $off = $end;
     }
     return $recs;
 }

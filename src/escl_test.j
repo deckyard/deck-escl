@@ -219,7 +219,7 @@ func fake(replies as list of Canned) {
  * @param f {Fake} the server
  * @return {list of Seen} what it received
  */
-func finish(f as Fake) {
+func stopFake(f as Fake) {
     defer httpd.shutdown($f.srv);
     try {
         return task.waitTimeout($f.t, 10000);
@@ -450,13 +450,19 @@ func testJobUrlTakesOnlyThePath() {
         "http://10.0.0.7:8080/eSCL/ScanJobs/42");
     testing.assertEqual(jobUrl($s, "/eSCL/ScanJobs/42/"), "http://10.0.0.7:8080/eSCL/ScanJobs/42");
     testing.assertEqual(jobUrl($s, "ScanJobs/42"), "http://10.0.0.7:8080/eSCL/ScanJobs/42");
+    # every character RFC 3986 allows in a path segment
+    testing.assertEqual(
+        jobUrl($s, "/eSCL/ScanJobs/a+b;c=1,d:e@f!$&'()*~%20"),
+        "http://10.0.0.7:8080/eSCL/ScanJobs/a+b;c=1,d:e@f!$&'()*~%20");
     for (def bad in [
         "",
         "   ",
         "http://host",
         "/eSCL/../x",
         "/eSCL/ScanJobs/4 2",
-        "/eSCL/ScanJobs/42?x"
+        "/eSCL/ScanJobs/42?x",
+        "/eSCL/ScanJobs/42#x",
+        "/eSCL/ScanJobs/<42>"
     ]) {
         def msg as string init "";
         try {
@@ -690,8 +696,9 @@ func testSmallHelpers() {
     testing.assertEqual(extension("image/tiff"), "tif");
     testing.assertEqual(extension("application/octet-stream"), "bin");
     testing.assertEqual(shown("a\nb"), "\"a?b\"");
-    testing.assertEqual(fileName("/tmp/", "scan", 7, "jpg"), "/tmp/scan-007.jpg");
-    testing.assertEqual(fileName("out", "scan", 1234, "pdf"), "out/scan-1234.pdf");
+    testing.assertEqual(fileName("/tmp/", "scan", 7, "jpg", 3), "/tmp/scan-007.jpg");
+    testing.assertEqual(fileName("out", "scan", 1234, "pdf", 3), "out/scan-1234.pdf");
+    testing.assertEqual(fileName("out", "scan", 7, "pdf", 4), "out/scan-0007.pdf");
 }
 
 # --- jobs against a fake scanner ------------------------------------------
@@ -702,11 +709,11 @@ func testScanPlaten() {
         created("http://NPI6142D.local.:8080/eSCL/ScanJobs/42"),
         bareReply(503),
         pageReply("image/jpeg", "JPEG-1"),
-        bareReply(404),
-        xmlReply(statusXml("", "Completed", "JobCompletedSuccessfully"))
+        xmlReply(statusXml("", "Completed", "JobCompletedSuccessfully")),
+        bareReply(204)
     ]);
     def pages as list of Page init scan(on($f), settings());
-    def seen as list of Seen init finish($f);
+    def seen as list of Seen init stopFake($f);
     testing.assertEqual(len($pages), 1);
     testing.assertEqual($pages[0].contentType, "image/jpeg");
     testing.assertEqual(convert.stringFromBytes("utf-8", $pages[0].data), "JPEG-1");
@@ -721,8 +728,8 @@ func testScanPlaten() {
             "POST /eSCL/ScanJobs",
             "GET /eSCL/ScanJobs/42/NextDocument",
             "GET /eSCL/ScanJobs/42/NextDocument",
-            "GET /eSCL/ScanJobs/42/NextDocument",
-            "GET /eSCL/ScannerStatus"
+            "GET /eSCL/ScannerStatus",
+            "DELETE /eSCL/ScanJobs/42"
         ]);
     testing.assertContains($seen[1].body, "<pwg:InputSource>Platen</pwg:InputSource>");
 }
@@ -735,10 +742,11 @@ func testScanFeederDuplex() {
         pageReply("image/jpeg", "front"),
         pageReply("image/jpeg", "back"),
         bareReply(404),
-        xmlReply(statusXml("ScannerAdfEmpty", "Completed", "JobCompletedSuccessfully"))
+        xmlReply(statusXml("ScannerAdfEmpty", "Completed", "JobCompletedSuccessfully")),
+        bareReply(204)
     ]);
     def pages as list of Page init scan(on($f), feederSettings(true));
-    def seen as list of Seen init finish($f);
+    def seen as list of Seen init stopFake($f);
     testing.assertEqual(len($pages), 2);
     testing.assertEqual(convert.stringFromBytes("utf-8", $pages[1].data), "back");
     testing.assertEqual($seen[1].path, "/eSCL/ScannerStatus");
@@ -753,7 +761,7 @@ func testEmptyFeederIsRefusedBeforeTheJob() {
     } catch (e) {
         $msg = $e.message;
     }
-    def seen as list of Seen init finish($f);
+    def seen as list of Seen init stopFake($f);
     testing.assertEqual($msg, "escl: the feeder is empty");
     testing.assertEqual(len($seen), 2);
 }
@@ -774,7 +782,7 @@ func testJamAbortsAndCancels() {
     } catch (e) {
         $msg = $e.message;
     }
-    def seen as list of Seen init finish($f);
+    def seen as list of Seen init stopFake($f);
     testing.assertEqual(
         $msg,
         "escl: the scanner aborted the job after 1 page(s) (JobCanceledBySystem), feeder: ScannerAdfJam");
@@ -795,7 +803,7 @@ func testFailedCancelIsAddedToTheError() {
     } catch (e) {
         $msg = $e.message;
     }
-    finish($f);
+    stopFake($f);
     testing.assertEqual(
         $msg,
         "escl: page 1: HTTP 500; cancelling the job failed too: escl: cancel: HTTP 500");
@@ -815,7 +823,7 @@ func testNoPagesIsAnError() {
     } catch (e) {
         $msg = $e.message;
     }
-    finish($f);
+    stopFake($f);
     testing.assertEqual($msg, "escl: the scanner returned no pages");
 }
 
@@ -836,7 +844,7 @@ func testRefusedJob() {
     } catch (e) {
         $msg = $e.message;
     }
-    finish($f);
+    stopFake($f);
     testing.assertEqual(
         $msg,
         "escl: the scanner refused the job (HTTP 409): it is busy, or the input is empty: \"Conflict\"");
@@ -871,8 +879,9 @@ func testMissingLocationIsAnError() {
     } catch (e) {
         $msg = $e.message;
     }
-    finish($f);
+    stopFake($f);
     testing.assertContains($msg, "no usable job location");
+    testing.assertContains($msg, "the scanner may stay busy");
 }
 
 func testUnreachableScanner() {
@@ -903,10 +912,11 @@ func testScanToFiles() {
         pageReply("image/jpeg", "one"),
         pageReply("image/jpeg; q=1", "two"),
         bareReply(404),
-        xmlReply(statusXml("", "Completed", "JobCompletedSuccessfully"))
+        xmlReply(statusXml("", "Completed", "JobCompletedSuccessfully")),
+        bareReply(204)
     ]);
     def files as list of string init scanToFiles(on($f), feederSettings(false), $dir, "letter");
-    finish($f);
+    stopFake($f);
     testing.assertEqual($files, [$dir + "/letter-001.jpg", $dir + "/letter-002.jpg"]);
     testing.assertEqual(convert.stringFromBytes("utf-8", fs.readBytes($files[1])), "two");
 
@@ -918,7 +928,7 @@ func testScanToFiles() {
     } catch (e) {
         $msg = $e.message;
     }
-    def seen as list of Seen init finish($g);
+    def seen as list of Seen init stopFake($g);
     testing.assertContains($msg, "will not overwrite");
     testing.assertEqual(len($seen), 1);
 }
@@ -952,7 +962,7 @@ func testStepByStep() {
     testing.assertTrue(nextPage($job).done);
     # a job the scanner has already forgotten counts as cancelled
     cancel($job);
-    def seen as list of Seen init finish($f);
+    def seen as list of Seen init stopFake($f);
     testing.assertEqual($seen[4].method, "DELETE");
     testing.assertEqual($seen[4].path, "/eSCL/ScanJobs/7");
 }
@@ -963,7 +973,8 @@ func testCancelRefused() {
         scanner: on($f),
         url: on($f).origin + "/eSCL/ScanJobs/7",
         pages: 0,
-        bytes: 0
+        bytes: 0,
+        platen: false
     };
     def msg as string init "";
     try {
@@ -971,13 +982,14 @@ func testCancelRefused() {
     } catch (e) {
         $msg = $e.message;
     }
-    finish($f);
+    stopFake($f);
     testing.assertEqual($msg, "escl: cancel: HTTP 403");
 }
 
 func testPageCapStopsARunawayJob() {
     def f as Fake init fake([
-        xmlReply(HP_CAPS),
+        xmlReply(EPSON_CAPS),
+        xmlReply(statusXml("ScannerAdfLoaded", "", "")),
         created("/eSCL/ScanJobs/42"),
         pageReply("image/jpeg", "1"),
         pageReply("image/jpeg", "2"),
@@ -988,15 +1000,15 @@ func testPageCapStopsARunawayJob() {
     $s.options.maxPages = 2;
     def msg as string init "";
     try {
-        scan($s, settings());
+        scan($s, feederSettings(false));
     } catch (e) {
         $msg = $e.message;
     }
-    def seen as list of Seen init finish($f);
+    def seen as list of Seen init stopFake($f);
     testing.assertEqual(
         $msg,
         "escl: the job gave more than 2 pages; raise Options.maxPages for longer jobs");
-    testing.assertEqual($seen[5].method, "DELETE");
+    testing.assertEqual($seen[6].method, "DELETE");
     testing.assertEqual(scanner("host").options.maxPages, DEFAULT_MAX_PAGES);
 }
 
@@ -1037,7 +1049,7 @@ func testRetryAfterIsHonoured() {
     capabilities($s);
     status($s);
     def took as int init time.milliseconds(time.sub(time.now(), $t0));
-    finish($f);
+    stopFake($f);
     # retryMs is 10; the scanner asked for a second
     testing.assertTrue($took >= 1000);
 }
@@ -1049,7 +1061,8 @@ func testScanToFilesNeverWritesThroughALink() {
     fs.writeString($target, "keep me");
     fs.symlink($target, $dir + "/doc-002.jpg");
     def f as Fake init fake([
-        xmlReply(HP_CAPS),
+        xmlReply(EPSON_CAPS),
+        xmlReply(statusXml("ScannerAdfLoaded", "", "")),
         created("/eSCL/ScanJobs/42"),
         pageReply("image/jpeg", "one"),
         pageReply("image/jpeg", "two"),
@@ -1057,11 +1070,11 @@ func testScanToFilesNeverWritesThroughALink() {
     ]);
     def msg as string init "";
     try {
-        scanToFiles(on($f), settings(), $dir, "doc");
+        scanToFiles(on($f), feederSettings(false), $dir, "doc");
     } catch (e) {
         $msg = $e.message;
     }
-    finish($f);
+    stopFake($f);
     testing.assertContains($msg, "will not overwrite");
     testing.assertContains(
         $msg,
@@ -1381,7 +1394,7 @@ func testLoginIsSentAndRefusalsExplained() {
     } catch (e) {
         $msg = $e.message;
     }
-    def seen as list of Seen init finish($f);
+    def seen as list of Seen init stopFake($f);
     testing.assertEqual($seen[0].auth, http.basic("scan", "secret"));
     testing.assertEqual($msg, "escl: GET ScannerStatus: HTTP 401 (the login was refused)");
     def g as Fake init fake([bareReply(401)]);
@@ -1391,7 +1404,7 @@ func testLoginIsSentAndRefusalsExplained() {
     } catch (e) {
         $m2 = $e.message;
     }
-    def seen2 as list of Seen init finish($g);
+    def seen2 as list of Seen init stopFake($g);
     testing.assertEqual($seen2[0].auth, "");
     testing.assertContains($m2, "the scanner wants a login");
 }
@@ -1404,7 +1417,13 @@ func testImageInfo() {
         "</scan:ScanImageInfo>";
     def f as Fake init fake([xmlReply($info), bareReply(404)]);
     def s as Scanner init on($f);
-    def job as Job init Job{scanner: $s, url: $s.base + "/ScanJobs/7", pages: 1, bytes: 0};
+    def job as Job init Job{
+        scanner: $s,
+        url: $s.base + "/ScanJobs/7",
+        pages: 1,
+        bytes: 0,
+        platen: false
+    };
     def got as ImageInfo init imageInfo($job);
     testing.assertEqual($got.width, 2480);
     testing.assertEqual($got.height, 3508);
@@ -1415,7 +1434,7 @@ func testImageInfo() {
     } catch (e) {
         $msg = $e.message;
     }
-    def seen as list of Seen init finish($f);
+    def seen as list of Seen init stopFake($f);
     testing.assertEqual($seen[0].path, "/eSCL/ScanJobs/7/ScanImageInfo");
     testing.assertEqual($msg, "escl: the scanner offers no ScanImageInfo for this job");
 }
@@ -1444,17 +1463,20 @@ func refuseSecond(p as Page, n as int) {
 
 func testScanEach() {
     def f as Fake init fake([
-        xmlReply(HP_CAPS),
+        xmlReply(EPSON_CAPS),
+        xmlReply(statusXml("ScannerAdfLoaded", "", "")),
         created("/eSCL/ScanJobs/42"),
         pageReply("image/jpeg", "page1"),
         pageReply("image/jpeg", "page2"),
         bareReply(404),
-        xmlReply(statusXml("", "Completed", "JobCompletedSuccessfully"))
+        xmlReply(statusXml("", "Completed", "JobCompletedSuccessfully")),
+        bareReply(204)
     ]);
-    testing.assertEqual(scanEach(on($f), settings(), checkPage), 2);
-    finish($f);
+    testing.assertEqual(scanEach(on($f), feederSettings(false), checkPage), 2);
+    stopFake($f);
     def g as Fake init fake([
-        xmlReply(HP_CAPS),
+        xmlReply(EPSON_CAPS),
+        xmlReply(statusXml("ScannerAdfLoaded", "", "")),
         created("/eSCL/ScanJobs/42"),
         pageReply("image/jpeg", "page1"),
         pageReply("image/jpeg", "page2"),
@@ -1462,13 +1484,13 @@ func testScanEach() {
     ]);
     def kind as string init "";
     try {
-        scanEach(on($g), settings(), refuseSecond);
+        scanEach(on($g), feederSettings(false), refuseSecond);
     } catch (e) {
         $kind = $e.kind + ": " + $e.message;
     }
-    def seen as list of Seen init finish($g);
+    def seen as list of Seen init stopFake($g);
     testing.assertEqual($kind, "mine: no second page");
-    testing.assertEqual($seen[4].method, "DELETE");
+    testing.assertEqual($seen[5].method, "DELETE");
 }
 
 func testQueriesAreNotAnswers() {
@@ -1554,13 +1576,14 @@ func testLoginNeedsAVerifiedCertificate() {
 }
 
 func testDiscoveryStopsAtAFlood() {
-    # 400 PTRs a packet, each owner and service compressed to the first name
+    # 60 PTRs a packet (under the label budget of one answer), each owner and
+    # service compressed to the first name; 40 packets pass MAX_RECORDS
     def packets as list of bytes init [];
-    for (def p in 0..6) {
+    for (def p in 0..40) {
         def recs as list of bytes init [
             rr(wire("_uscan._tcp.local"), 12, cat([raw([2, 78, 48]), raw([192, 12])]))
         ];
-        for (def i in 1..400) {
+        for (def i in 1..60) {
             $recs[] = rr(raw([192, 12]), 12, cat([raw([2, 78, 49]), raw([192, 12])]));
         }
         $packets[] = answer($recs);
@@ -1583,9 +1606,9 @@ func testDiscoveryCountsEveryRecordType() {
     # SRV records only, each with its own owner: no PTR, so a PTR-only cap
     # would never stop reading them
     def packets as list of bytes init [];
-    for (def p in 0..9) {
+    for (def p in 0..25) {
         def recs as list of bytes init [];
-        for (def i in 0..250) {
+        for (def i in 0..100) {
             $recs[] = rr(wire("s{$p}x{$i}.local"), 33, raw([0, 0, 0, 0, 0, 80, 192, 12]));
         }
         $packets[] = answer($recs);
@@ -1623,4 +1646,733 @@ func testFuzzedAnswersFailOnlyAsEscl() {
         }
     }
     testing.assertEqual($odd, []);
+}
+
+# --- independent review ---------------------------------------------------
+
+/**
+ * The method and path of each request.
+ *
+ * @param seen {list of Seen} the requests
+ * @return {list of string} `METHOD /path` each
+ */
+func calls(seen as list of Seen) {
+    def out as list of string init [];
+    for (def s in $seen) {
+        $out[] = $s.method + " " + $s.path;
+    }
+    return $out;
+}
+
+func testEveryUsableRangeIsKept() {
+    def x as string init '<ScannerCapabilities><Platen><PlatenInputCaps>' +
+        '<MaxWidth>2550</MaxWidth><MaxHeight>3508</MaxHeight><SettingProfiles>' +
+        '<SettingProfile><ColorModes><ColorMode>RGB24</ColorMode></ColorModes>' +
+        '<DocumentFormats><DocumentFormat>image/jpeg</DocumentFormat></DocumentFormats>' +
+        '<SupportedResolutions><ResolutionRange>' +
+        '<XResolutionRange><Min>75</Min><Max>1200</Max><Step>75</Step></XResolutionRange>' +
+        '<YResolutionRange><Min>75</Min><Max>1200</Max><Step>75</Step></YResolutionRange>' +
+        '</ResolutionRange></SupportedResolutions></SettingProfile>' +
+        '<SettingProfile><SupportedResolutions><ResolutionRange>' +
+        '<XResolutionRange><Min>300</Min><Max>300</Max><Step>1</Step></XResolutionRange>' +
+        '<YResolutionRange><Min>300</Min><Max>300</Max><Step>1</Step></YResolutionRange>' +
+        '</ResolutionRange></SupportedResolutions></SettingProfile>' +
+        '<SettingProfile><SupportedResolutions><ResolutionRange>' +
+        '<XResolutionRange><Min>100</Min><Max>200</Max></XResolutionRange>' +
+        '<YResolutionRange><Min>50</Min><Max>200</Max></YResolutionRange>' +
+        '</ResolutionRange></SupportedResolutions></SettingProfile>' +
+        '</SettingProfiles></PlatenInputCaps></Platen></ScannerCapabilities>';
+    def c as Capabilities init parseCapabilities($x);
+    # the X != Y range is dropped, the narrow one does not replace the wide one
+    testing.assertEqual(
+        $c.inputs[0].resolutionRanges,
+        [Range{min: 75, max: 1200, step: 75}, Range{min: 300, max: 300, step: 1}]);
+    def st as Settings init settings();
+    $st.resolution = 600;
+    testing.assertEqual(check($c, $st).resolution, 600);
+    $st.resolution = 610;
+    testing.assertContains(
+        checkError($c, $st),
+        "the scanner has 75-1200 in steps of 75, 300-300 in steps of 1");
+}
+
+func testScanSettingsDocumentIsPinned() {
+    def st as Settings init feederSettings(true);
+    $st.intent = "";
+    $st.adjust = {};
+    def want as string init '<?xml version="1.0" encoding="UTF-8"?>
+<scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03" xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm">
+  <pwg:Version>2.6</pwg:Version>
+  <pwg:ScanRegions pwg:MustHonor="true">
+    <pwg:ScanRegion>
+      <pwg:ContentRegionUnits>escl:ThreeHundredthsOfInches</pwg:ContentRegionUnits>
+      <pwg:XOffset>0</pwg:XOffset>
+      <pwg:YOffset>0</pwg:YOffset>
+      <pwg:Width>2550</pwg:Width>
+      <pwg:Height>3600</pwg:Height>
+    </pwg:ScanRegion>
+  </pwg:ScanRegions>
+  <pwg:DocumentFormat>image/jpeg</pwg:DocumentFormat>
+  <scan:DocumentFormatExt>image/jpeg</scan:DocumentFormatExt>
+  <pwg:InputSource>Feeder</pwg:InputSource>
+  <scan:ColorMode>RGB24</scan:ColorMode>
+  <scan:XResolution>300</scan:XResolution>
+  <scan:YResolution>300</scan:YResolution>
+  <scan:Duplex>true</scan:Duplex>
+</scan:ScanSettings>
+';
+    testing.assertEqual(settingsXml(parseCapabilities(EPSON_CAPS), $st), $want);
+}
+
+func testJobRequestsGoWhereTheyShould() {
+    def f as Fake init fake([
+        xmlReply(EPSON_CAPS),
+        xmlReply(statusXml("ScannerAdfLoaded", "", "")),
+        created("/eSCL/ScanJobs/42"),
+        pageReply("image/jpeg", "front"),
+        bareReply(404),
+        xmlReply(statusXml("ScannerAdfJam", "Aborted", "JobCanceledBySystem")),
+        bareReply(200)
+    ]);
+    def msg as string init "";
+    try {
+        scan(on($f), feederSettings(false));
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertContains($msg, "aborted");
+    testing.assertEqual(
+        calls(stopFake($f)),
+        [
+            "GET /eSCL/ScannerCapabilities",
+            "GET /eSCL/ScannerStatus",
+            "POST /eSCL/ScanJobs",
+            "GET /eSCL/ScanJobs/42/NextDocument",
+            "GET /eSCL/ScanJobs/42/NextDocument",
+            "GET /eSCL/ScannerStatus",
+            "DELETE /eSCL/ScanJobs/42"
+        ]);
+}
+
+func testFinishedJobFoundByUuid() {
+    # the status names the job by another URI, but by the same UUID
+    def st as string init strings.replace(
+        statusXml("", "Aborted", "JobCanceledBySystem"),
+        "<pwg:JobUri>/eSCL/ScanJobs/42</pwg:JobUri>",
+        "<pwg:JobUri>/jobs/other</pwg:JobUri>");
+    def f as Fake init fake([
+        xmlReply(HP_CAPS),
+        created("/eSCL/ScanJobs/42"),
+        pageReply("image/jpeg", "1"),
+        xmlReply($st),
+        bareReply(200)
+    ]);
+    def msg as string init "";
+    try {
+        scan(on($f), settings());
+    } catch (e) {
+        $msg = $e.message;
+    }
+    stopFake($f);
+    testing.assertContains($msg, "the scanner aborted the job after 1 page(s)");
+}
+
+func testRetryAfterNeverPassesTheDeadline() {
+    def busy as Canned init bareReply(503);
+    $busy.retryAfter = "5";
+    def f as Fake init fake([$busy, $busy]);
+    def s as Scanner init on($f);
+    $s.options.busyWaitMs = 300;
+    def t0 as time.Time init time.now();
+    def msg as string init "";
+    try {
+        status($s);
+    } catch (e) {
+        $msg = $e.message;
+    }
+    def took as int init time.milliseconds(time.sub(time.now(), $t0));
+    stopFake($f);
+    testing.assertEqual($msg, "escl: GET ScannerStatus: HTTP 503");
+    testing.assertTrue($took >= 300 and $took < 1500);
+}
+
+func testHostileCapabilitiesFailFast() {
+    def modes as string init "";
+    for (def i in 0..300) {
+        $modes = $modes + "<ColorMode>m{$i}</ColorMode>";
+    }
+    def many as string init strings.replace(
+        EPSON_CAPS,
+        "<ColorMode>Grayscale8</ColorMode>",
+        $modes);
+    def bulk as string init strings.replace(
+        EPSON_CAPS,
+        "<AdfOptions>",
+        "<x>" + strings.repeat("<y/>", 12000) + "</x><AdfOptions>");
+    def cases as map of string to string init {};
+    $cases[$many] = "a list has more than 256 entries";
+    $cases[$bulk] = "ScannerCapabilities has more than 10000 elements";
+    for (def text in $cases) {
+        def t0 as time.Time init time.now();
+        def msg as string init "";
+        try {
+            parseCapabilities($text);
+        } catch (e) {
+            $msg = $e.message;
+        }
+        testing.assertContains($msg, $cases[$text]);
+        testing.assertTrue(time.milliseconds(time.sub(time.now(), $t0)) < 3000);
+    }
+}
+
+func testControlsInDeviceTextComeBackAsQuestionMarks() {
+    def st as Status init parseStatus(strings.replace(
+        statusXml("", "Completed", "Done&#x9b;2J"),
+        "<pwg:State>Idle</pwg:State>",
+        "<pwg:State>Idle&#x9b;[2J</pwg:State>"));
+    # XML refuses C0 controls such as ESC itself; C1 ones like CSI get through
+    testing.assertEqual($st.state, "Idle?[2J");
+    testing.assertEqual($st.jobs[0].reasons, ["Done?2J"]);
+    def c as Capabilities init parseCapabilities(strings.replace(
+        HP_CAPS,
+        "HP LaserJet MFP M28w",
+        "HP&#x85;M28"));
+    testing.assertEqual($c.makeAndModel, "HP?M28");
+}
+
+func testJobBytesAreCapped() {
+    def f as Fake init fake([
+        xmlReply(EPSON_CAPS),
+        xmlReply(statusXml("ScannerAdfLoaded", "", "")),
+        created("/eSCL/ScanJobs/42"),
+        pageReply("image/jpeg", "123456"),
+        pageReply("image/jpeg", "123456"),
+        bareReply(200)
+    ]);
+    def s as Scanner init on($f);
+    $s.options.maxJobBytes = 10;
+    def msg as string init "";
+    try {
+        scanEach($s, feederSettings(false), checkLength);
+    } catch (e) {
+        $msg = $e.message;
+    }
+    def seen as list of Seen init stopFake($f);
+    testing.assertEqual(
+        $msg,
+        "escl: the job's pages add up to more than 10 bytes; raise Options.maxJobBytes for larger jobs");
+    testing.assertEqual($seen[5].method, "DELETE");
+    testing.assertEqual(scanner("h").options.maxJobBytes, DEFAULT_MAX_JOB_BYTES);
+}
+
+/**
+ * A `scanEach` handler that only checks the page is non-empty.
+ *
+ * @param p {Page} the page
+ * @param n {int} its number
+ */
+func checkLength(p as Page, n as int) {
+    testing.assertTrue(len($p.data) > 0 and $n > 0);
+}
+
+/**
+ * Accept one request and answer it only after a pause.
+ *
+ * @param srv {httpd.Server} the server
+ * @param ms {int} the pause
+ * @return {int} 1
+ */
+func answerLate(srv as httpd.Server, ms as int) {
+    def req as httpd.Request init httpd.accept($srv);
+    time.sleep(time.fromMilliseconds($ms));
+    httpd.respond($req, 200, HP_CAPS);
+    return 1;
+}
+
+func testDeadlineEndsASlowRequest() {
+    def srv as httpd.Server init httpd.listen("127.0.0.1:0");
+    def t as task of int init spawn {
+        return answerLate($srv, 1500);
+    };
+    def o as Options;
+    $o.deadlineMs = 200;
+    def s as Scanner init scannerWith(httpd.address($srv), $o);
+    def t0 as time.Time init time.now();
+    def msg as string init "";
+    try {
+        capabilities($s);
+    } catch (e) {
+        $msg = $e.message;
+    }
+    def took as int init time.milliseconds(time.sub(time.now(), $t0));
+    task.wait($t);
+    httpd.shutdown($srv);
+    testing.assertContains($msg, "no complete reply within 200 ms (Options.deadlineMs)");
+    testing.assertTrue($took < 1000);
+    # a fast reply within the deadline is untouched
+    def srv2 as httpd.Server init httpd.listen("127.0.0.1:0");
+    def t2 as task of int init spawn {
+        return answerLate($srv2, 0);
+    };
+    $o.deadlineMs = 3000;
+    testing.assertEqual(capabilities(scannerWith(httpd.address($srv2), $o)).version, "2.63");
+    task.wait($t2);
+    httpd.shutdown($srv2);
+}
+
+func testADanglingLinkIsNotWrittenThrough() {
+    def dir as string init fs.makeTempDir();
+    defer fs.removeAll($dir);
+    fs.symlink($dir + "/missing-target", $dir + "/p-001.jpg");
+    def msg as string init "";
+    try {
+        writeFresh($dir + "/p-001.jpg", utf8("x"));
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertContains($msg, "will not overwrite");
+    testing.assertFalse(fs.exists($dir + "/missing-target"));
+}
+
+# --- third review ---------------------------------------------------------
+
+func testHostAlwaysCarriesThePort() {
+    testing.assertEqual(authority("http://10.0.0.5/eSCL/ScannerStatus"), "10.0.0.5:80");
+    testing.assertEqual(authority("https://scan.lan/eSCL"), "scan.lan:443");
+    testing.assertEqual(authority("http://10.0.0.5:8080/eSCL"), "10.0.0.5:8080");
+    testing.assertEqual(authority("http://[fe80::1]/eSCL"), "[fe80::1]:80");
+    testing.assertEqual(authority("http://[fe80::1]:8080/eSCL"), "[fe80::1]:8080");
+    def s as Scanner init scanner("10.0.0.5");
+    def h as map of string to string init requestHeaders($s, $s.base + "/ScannerStatus", "");
+    testing.assertEqual($h["Host"], "10.0.0.5:80");
+    testing.assertFalse(maps.has($h, "Content-Type"));
+    testing.assertEqual(
+        requestHeaders($s, $s.base + "/ScanJobs", "<x/>")["Content-Type"],
+        "text/xml");
+}
+
+func testHostNamesAreChecked() {
+    for (def bad in [".", "..", "-", "a..b", "-a.lan", "a-.lan", ".a", "a.lan.."]) {
+        testing.assertContains(addressError($bad), "malformed host");
+    }
+    testing.assertEqual(scanner("scanner.lan.").origin, "http://scanner.lan.");
+    testing.assertEqual(scanner("EPSON1A2B3C.local").origin, "http://EPSON1A2B3C.local");
+}
+
+func testMalformedXmlErrorsAreClipped() {
+    def junk as string init "&\u009b[2J\n\nFAKE" + strings.repeat("A", 2000) + ";";
+    def msg as string init "";
+    try {
+        parseCapabilities("<ScannerCapabilities><a>" + $junk + "</a></ScannerCapabilities>");
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertContains($msg, "malformed XML");
+    testing.assertTrue(len($msg) < 300);
+    testing.assertFalse(strings.contains($msg, "\u009b"));
+    testing.assertFalse(strings.contains($msg, "\n"));
+}
+
+func testLongDeviceTextIsRefused() {
+    def long as string init strings.repeat("M", 1025);
+    def caps as string init strings.replace(HP_CAPS, "HP LaserJet MFP M28w", $long);
+    testing.assertTrue(strings.contains($caps, $long));
+    def msg as string init "";
+    try {
+        parseCapabilities($caps);
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertContains($msg, "more than 1024 characters");
+    # a 4 MB field fails fast
+    def t0 as time.Time init time.now();
+    $msg = "";
+    try {
+        parseCapabilities(strings.replace(
+            HP_CAPS,
+            "HP LaserJet MFP M28w",
+            strings.repeat("M", 4000000) + "&#x85;"));
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertContains($msg, "more than 1024 characters");
+    testing.assertTrue(time.milliseconds(time.sub(time.now(), $t0)) < 3000);
+}
+
+/**
+ * Answer one connection with a raw HTTP response, as written.
+ *
+ * @param l {net.Listener} the listener
+ * @param reply {string} the response
+ * @return {int} 0
+ */
+func rawOnce(l as net.Listener, reply as string) {
+    def c as net.Conn init net.accept($l);
+    net.setReadDeadline($c, 2000);
+    net.readBytes($c, 65536);
+    net.writeBytes($c, utf8($reply));
+    net.close($c);
+    return 0;
+}
+
+func testPageContentTypeIsChecked() {
+    # httpd will not send such a header, so a raw socket does
+    def l as net.Listener init net.listen("127.0.0.1:0");
+    def t as task of int init spawn {
+        return rawOnce(
+            $l,
+            "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\u001b]0;pwned\u0007\r\n" +
+                "Content-Length: 3\r\nConnection: close\r\n\r\nabc");
+    };
+    def s as Scanner init scanner(net.address($l));
+    def job as Job init Job{
+        scanner: $s,
+        url: $s.base + "/ScanJobs/1",
+        pages: 0,
+        bytes: 0,
+        platen: false
+    };
+    def msg as string init "";
+    try {
+        nextPage($job);
+    } catch (e) {
+        $msg = $e.message;
+    }
+    task.waitTimeout($t, 10000);
+    net.close($l);
+    testing.assertContains($msg, "page 1 has a malformed Content-Type");
+    testing.assertFalse(strings.contains($msg, "\u001b"));
+}
+
+func testPageExtensionFromItsBytes() {
+    def kinds as list of list of int init [
+        [255, 216, 255, 224],
+        [137, 80, 78, 71, 13, 10, 26, 10],
+        [37, 80, 68, 70, 45],
+        [73, 73, 42, 0],
+        [77, 77, 0, 42],
+        [1, 2, 3, 4]
+    ];
+    def wants as list of string init ["jpg", "png", "pdf", "tif", "tif", "bin"];
+    for (def k in 0..len($kinds)) {
+        testing.assertEqual(
+            pageExtension(Page{done: false, contentType: "", data: raw($kinds[$k])}),
+            $wants[$k]);
+    }
+    # a usable type wins over the bytes
+    testing.assertEqual(
+        pageExtension(Page{done: false, contentType: "image/png", data: raw([255, 216, 255])}),
+        "png");
+}
+
+func testMdnsErrorsAndOtherOpcodesAreIgnored() {
+    def good as bytes init scannerAnswer("Scanner", "eSCL");
+    # rcode 3 (NXDOMAIN), then opcode 1
+    def failed as bytes init $good;
+    $failed[3] = 3;
+    def opcode as bytes init $good;
+    $opcode[2] = 132 + 8;
+    def recs as Records init Records{ptrs: [], srvs: {}, txts: {}, addrs: {}, count: 0};
+    testing.assertEqual(absorb($recs, $failed).count, 0);
+    testing.assertEqual(absorb($recs, $opcode).count, 0);
+    testing.assertTrue(absorb($recs, $good).count > 0);
+}
+
+func testMdnsAnswersFromAnotherPortAreIgnored() {
+    def sock as net.UDPSocket init net.listenUDP("127.0.0.1:0");
+    def other as net.UDPSocket init net.listenUDP("127.0.0.1:0");
+    def t as task of bytes init spawn {
+        def q as net.Datagram init net.recvFrom($sock, 9000);
+        net.sendTo($other, $q.peer, scannerAnswer("Spoofed", "eSCL"));
+        net.sendTo($sock, $q.peer, scannerAnswer("Real", "eSCL"));
+        return $q.data;
+    };
+    def found as list of Found init discoverAt(net.address($sock), 500);
+    task.wait($t);
+    net.close($sock);
+    net.close($other);
+    testing.assertEqual(len($found), 1);
+    testing.assertEqual($found[0].name, "Real");
+}
+
+func testAFailedStatusAfterTheLastPageKeepsThePages() {
+    def f as Fake init fake([
+        xmlReply(HP_CAPS),
+        created("/eSCL/ScanJobs/42"),
+        pageReply("image/jpeg", "page1"),
+        bareReply(500),
+        bareReply(500)
+    ]);
+    def pages as list of Page init scan(on($f), settings());
+    def seen as list of Seen init stopFake($f);
+    testing.assertEqual(len($pages), 1);
+    testing.assertEqual($seen[3].path, "/eSCL/ScannerStatus");
+    testing.assertEqual($seen[4].method + " " + $seen[4].path, "DELETE /eSCL/ScanJobs/42");
+}
+
+func testALoginInTheAddressIsNotEchoed() {
+    for (def a in [
+        "scan:hunter2@10.0.0.5",
+        "https://scan:hunter2@10.0.0.5:8080/eSCL",
+        "ftp://scan:hunter2@10.0.0.5",
+        "http://scan:hun/ter2/hunter2@10.0.0.5/eSCL",
+        "scan:hunter2/x@10.0.0.5",
+        "https://u:hunter2?b/c#d@10.0.0.5"
+    ]) {
+        def msg as string init "";
+        try {
+            scanner($a);
+        } catch (e) {
+            $msg = $e.message;
+        }
+        testing.assertContains($msg, "escl: ");
+        testing.assertFalse(strings.contains($msg, "hunter2"));
+    }
+    def msg2 as string init "";
+    try {
+        scanner("scan:hunter2@10.0.0.5");
+    } catch (e) {
+        $msg2 = $e.message;
+    }
+    testing.assertEqual(
+        $msg2,
+        "escl: put a login in Options.username and Options.password, not in the address \"...@10.0.0.5\"");
+}
+
+func testBidiControlsAreNeutralised() {
+    def spoof as string init "Scan\u202egpj.exe\u2066x\u200f";
+    testing.assertEqual(printable($spoof), "Scan?gpj.exe?x?");
+    testing.assertEqual(clip($spoof), "Scan?gpj.exe?x?");
+    # the Arabic letter mark, invisible spaces and joiners, line and
+    # paragraph separators, the byte order mark
+    testing.assertEqual(
+        printable("a\u061cb\u200bc\u200dd\u2028e\u2029f\u2060g\ufeffh\u180ei"),
+        "a?b?c?d?e?f?g?h?i");
+    testing.assertEqual(printable("Café ü 日本"), "Café ü 日本");
+}
+
+func testALoopOfYourOwnCountsAndFinishes() {
+    def f as Fake init fake([
+        xmlReply(HP_CAPS),
+        created("/eSCL/ScanJobs/7"),
+        pageReply("image/png", "P1"),
+        xmlReply(statusXml("", "Completed", "JobCompletedSuccessfully")),
+        bareReply(204)
+    ]);
+    def s as Scanner init on($f);
+    def job as Job init start($s, capabilities($s), settings());
+    while (true) {
+        def p as Page init nextPage($job);
+        if ($p.done) {
+            break;
+        }
+        $job = countPage($job, $p);
+    }
+    finish($job);
+    def seen as list of Seen init stopFake($f);
+    testing.assertEqual($job.pages, 1);
+    testing.assertEqual($job.bytes, 2);
+    testing.assertEqual($seen[4].method + " " + $seen[4].path, "DELETE /eSCL/ScanJobs/7");
+    # an aborted job fails, and a job of no pages too
+    def g as Fake init fake([
+        xmlReply(statusXml("", "Aborted", "AbortedByDevice")),
+        xmlReply(statusXml("", "Completed", "JobCompletedSuccessfully"))
+    ]);
+    def s2 as Scanner init on($g);
+    def done as Job init Job{
+        scanner: $s2,
+        url: $s2.base + "/ScanJobs/42",
+        pages: 1,
+        bytes: 2,
+        platen: false
+    };
+    def msgs as list of string init [];
+    for (def pages in [1, 0]) {
+        $done.pages = $pages;
+        try {
+            finish($done);
+            $msgs[] = "";
+        } catch (e) {
+            $msgs[] = $e.message;
+        }
+    }
+    stopFake($g);
+    testing.assertContains($msgs[0], "the scanner aborted the job after 1 page(s)");
+    testing.assertEqual($msgs[1], "escl: the scanner returned no pages");
+}
+
+func testAHostileDocumentIsRefusedBeforeItIsParsed() {
+    def doc as string init "<ScannerCapabilities>" + strings.repeat("<a/>", 1000000) +
+        "</ScannerCapabilities>";
+    def t0 as time.Time init time.now();
+    def msg as string init "";
+    try {
+        parseCapabilities($doc);
+    } catch (e) {
+        $msg = $e.message;
+    }
+    def ms as int init time.milliseconds(time.sub(time.now(), $t0));
+    testing.assertEqual(
+        $msg,
+        "escl: ScannerCapabilities has more than 10000 elements; not an eSCL document");
+    # counted in the text, before a tree is built: about 1 GB and 0.5 s without
+    testing.assertTrue($ms < 100);
+    # under the text count but over the tree count: refused while walking
+    $msg = "";
+    try {
+        parseCapabilities("<ScannerCapabilities>" + strings.repeat("<a/>", 10001) +
+            "</ScannerCapabilities>");
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertContains($msg, "more than 10000 elements");
+}
+
+func testAbortFoundByAnAbsoluteJobUri() {
+    def st as string init strings.replace(
+        statusXml("", "Aborted", "AbortedByDevice"),
+        "<pwg:JobUri>/eSCL/ScanJobs/42</pwg:JobUri><pwg:JobUuid>42</pwg:JobUuid>",
+        "<pwg:JobUri>http://NPI6142D.local.:80/eSCL/ScanJobs/42</pwg:JobUri>");
+    testing.assertFalse(strings.contains($st, "JobUuid"));
+    def f as Fake init fake([
+        xmlReply(HP_CAPS),
+        created("/eSCL/ScanJobs/42"),
+        pageReply("image/jpeg", "1"),
+        xmlReply($st),
+        bareReply(200)
+    ]);
+    def msg as string init "";
+    try {
+        scan(on($f), settings());
+    } catch (e) {
+        $msg = $e.message;
+    }
+    stopFake($f);
+    testing.assertContains($msg, "the scanner aborted the job after 1 page(s)");
+    testing.assertEqual(uriPath("https://h:1/a/b"), "/a/b");
+    testing.assertEqual(uriPath("http://h"), "");
+    testing.assertEqual(uriPath("/a/b"), "/a/b");
+}
+
+/**
+ * An mDNS answer of `n` records of this type, each owned by the 127-label
+ * name the first one spells out and the others point back to.
+ *
+ * @param n {int} the records
+ * @param kind {int} their type
+ * @return {bytes} the message
+ */
+func floodOf(n as int, kind as int) {
+    def m as bytes;
+    for (def b in [0, 0, 132, 0, 0, 0, $n // 256, $n % 256, 0, 0, 0, 0]) {
+        $m[] = $b;
+    }
+    for (def i in 0..127) {
+        $m[] = 1;
+        $m[] = 97;
+    }
+    $m[] = 0;
+    for (def b in [0, $kind, 0, 1, 0, 0, 0, 0, 0, 0]) {
+        $m[] = $b;
+    }
+    for (def r in 1..$n) {
+        for (def b in [192, 12, 0, $kind, 0, 1, 0, 0, 0, 0, 0, 0]) {
+            $m[] = $b;
+        }
+    }
+    return $m;
+}
+
+func testRecordsOfOtherTypesCountAndCostLittle() {
+    def empty as Records init Records{ptrs: [], srvs: {}, txts: {}, addrs: {}, count: 0};
+    def t0 as time.Time init time.now();
+    def recs as Records init absorb($empty, floodOf(727, 99));
+    testing.assertEqual($recs.count, 727);
+    testing.assertTrue(time.milliseconds(time.sub(time.now(), $t0)) < 100);
+    # past the budget the rest of a message is not read
+    $recs.count = MAX_RECORDS - 10;
+    $recs = absorb($recs, floodOf(727, 99));
+    testing.assertEqual($recs.count, MAX_RECORDS + 1);
+    # records that are read: their names count against a budget per answer
+    for (def kind in [12, 16]) {
+        def msg as string init "";
+        $t0 = time.now();
+        try {
+            absorb($empty, floodOf(727, $kind));
+        } catch (e) {
+            $msg = $e.message;
+        }
+        testing.assertEqual($msg, "escl: mDNS: an answer with more than 512 name labels");
+        testing.assertTrue(time.milliseconds(time.sub(time.now(), $t0)) < 100);
+    }
+}
+
+func testAFaultyFeederIsRefusedBeforeTheJob() {
+    for (def fault in ["ScannerAdfJam", "ScannerAdfHatchOpen"]) {
+        def f as Fake init fake([xmlReply(EPSON_CAPS), xmlReply(statusXml($fault, "", ""))]);
+        def msg as string init "";
+        try {
+            scan(on($f), feederSettings(false));
+        } catch (e) {
+            $msg = $e.message;
+        }
+        def seen as list of Seen init stopFake($f);
+        testing.assertEqual($msg, "escl: the feeder reports {$fault}; clear it and try again");
+        testing.assertEqual(len($seen), 2);
+    }
+}
+
+/**
+ * Accept one connection, answer it, and return what the client sent.
+ *
+ * @param l {net.Listener} the listener
+ * @param reply {string} the raw HTTP reply
+ * @return {string} the request as received
+ */
+func rawCapture(l as net.Listener, reply as string) {
+    def c as net.Conn init net.accept($l);
+    net.setReadDeadline($c, 2000);
+    def got as bytes init net.readBytes($c, 65536);
+    net.writeBytes($c, utf8($reply));
+    net.close($c);
+    return convert.stringFromBytes("utf-8", $got);
+}
+
+func testHostReachesTheWire() {
+    def l as net.Listener init net.listen("127.0.0.1:0");
+    def t as task of string init spawn {
+        return rawCapture(
+            $l,
+            "HTTP/1.1 500 Oops\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    };
+    def where as string init net.address($l);
+    def s as Scanner init scanner($where);
+    try {
+        status($s);
+    } catch (e) {
+        testing.assertContains($e.message, "HTTP 500");
+    }
+    def req as string init task.waitTimeout($t, 10000);
+    net.close($l);
+    def hosts as int init 0;
+    for (def line in strings.split($req, "\r\n")) {
+        if (strings.startsWith(strings.lower($line), "host:")) {
+            $hosts = $hosts + 1;
+            testing.assertEqual($line, "Host: " + $where);
+        }
+    }
+    testing.assertEqual($hosts, 1);
+}
+
+func testAnAnswerOverTheLabelBudgetIsSkipped() {
+    def sock as net.UDPSocket init net.listenUDP("127.0.0.1:0");
+    def packets as list of bytes init [floodOf(727, 12), scannerAnswer("Real", "eSCL")];
+    def t as task of bytes init spawn {
+        return respondMdns($sock, $packets);
+    };
+    def found as list of Found init discoverAt(net.address($sock), 1000);
+    task.wait($t);
+    net.close($sock);
+    testing.assertEqual(len($found), 1);
+    testing.assertEqual($found[0].name, "Real");
 }
