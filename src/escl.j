@@ -427,13 +427,71 @@ def struct Reply {
 };
 
 /**
+ * A failed eSCL call. Every error of kind `"escl"` is one, so its fields are
+ * safe to read once the kind matches.
+ *
+ * @field kind {string} always `"escl"`
+ * @field message {string} `escl: <what went wrong>`
+ * @field status {int} the HTTP status the scanner answered (401, 409, 503, ...); 0 when the failure is not a refused request
+ * @field retryAfterMs {int} the reply's `Retry-After` in ms when it gave one in seconds (a busy scanner, 503); -1 if none
+ */
+export def struct EsclError {
+    kind as string,
+    message as string,
+    status as int,
+    retryAfterMs as int
+};
+
+/**
  * Throw an escl error.
  *
  * @param message {string} what went wrong, without the `escl: ` prefix
- * @throws {Error} kind "escl", always
+ * @throws {EsclError} kind "escl", always
  */
 func fail(message as string) {
-    throw Error{kind: "escl", message: "escl: " + $message};
+    throw EsclError{kind: "escl", message: "escl: " + $message, status: 0, retryAfterMs: -1};
+}
+
+/**
+ * Throw the escl error of a reply the deck did not expect.
+ *
+ * @param message {string} what went wrong, without the `escl: ` prefix
+ * @param r {Reply} the reply, for its status and `Retry-After`
+ * @throws {EsclError} kind "escl", always
+ */
+func failReply(message as string, r as Reply) {
+    throw EsclError{
+        kind: "escl",
+        message: "escl: " + $message,
+        status: $r.status,
+        retryAfterMs: $r.retryAfterMs
+    };
+}
+
+/**
+ * Throw a reached cap: kind "limit", the message as an escl error's.
+ *
+ * @param message {string} what went wrong, without the `escl: ` prefix
+ * @throws {Error} kind "limit", always
+ */
+func failLimit(message as string) {
+    throw Error{kind: "limit", message: "escl: " + $message};
+}
+
+/**
+ * An escl error with text added to its message, its fields kept.
+ *
+ * @param err {EsclError} the error
+ * @param note {string} the text to add
+ * @return {EsclError} the error
+ */
+func withNote(err as EsclError, note as string) {
+    return EsclError{
+        kind: $err.kind,
+        message: $err.message + $note,
+        status: $err.status,
+        retryAfterMs: $err.retryAfterMs
+    };
 }
 
 /**
@@ -823,6 +881,10 @@ func send(s as Scanner, method as string, url as string, body as string, maxByte
                 $tls);
         }
     } catch (e) {
+        # a body over maxBytes stays a reached cap
+        if ($e.kind == "limit") {
+            failLimit("{$method} {$url}: " + clip($e.message));
+        }
         fail("{$method} {$url}: " + clip($e.message));
     }
     def location as string init "";
@@ -1038,13 +1100,13 @@ func refusal(s as Scanner, r as Reply) {
  * @param text {string} the XML
  * @param name {string} the expected root element's local name
  * @return {xml.Value} the root element
- * @throws {Error} kind "escl" if it is malformed or another document
+ * @throws {Error} kind "escl" if it is malformed or another document, "limit" past `MAX_ELEMENTS` elements
  */
 func decodeAs(text as string, name as string) {
     # every element takes at least one `<`; counted before the parser builds
     # a tree, which costs far more than the text
     if (strings.count($text, "<") > 2 * MAX_ELEMENTS + 16) {
-        fail("{$name} has more than {MAX_ELEMENTS} elements; not an eSCL document");
+        failLimit("{$name} has more than {MAX_ELEMENTS} elements; not an eSCL document");
     }
     def root as xml.Value;
     try {
@@ -1065,7 +1127,7 @@ func decodeAs(text as string, name as string) {
  *
  * @param root {xml.Value} the root element
  * @param name {string} the document, for the error
- * @throws {Error} kind "escl" past `MAX_ELEMENTS` elements
+ * @throws {Error} kind "limit" past `MAX_ELEMENTS` elements
  */
 func checkElements(root as xml.Value, name as string) {
     # breadth-first over a list that only grows: no copies, and it stops
@@ -1075,7 +1137,7 @@ func checkElements(root as xml.Value, name as string) {
     while ($at < len($queue)) {
         for (def c in xml.children($queue[$at])) {
             if (len($queue) >= MAX_ELEMENTS) {
-                fail("{$name} has more than {MAX_ELEMENTS} elements; not an eSCL document");
+                failLimit("{$name} has more than {MAX_ELEMENTS} elements; not an eSCL document");
             }
             $queue[] = $c;
         }
@@ -1094,7 +1156,7 @@ func checkElements(root as xml.Value, name as string) {
 func document(s as Scanner, name as string) {
     def r as Reply init sendPatiently($s, "GET", $s.base + "/" + $name, "", MAX_DOC_BYTES);
     if ($r.status != 200) {
-        fail("GET {$name}: " + refusal($s, $r));
+        failReply("GET {$name}: " + refusal($s, $r), $r);
     }
     return decodeAs(textOf($r, $name), $name);
 }
@@ -1205,7 +1267,7 @@ func textAt(node as xml.Value, name as string) {
 func deviceText(el as xml.Value, name as string) {
     def t as string init strings.trim(xml.text($el));
     if (len($t) > MAX_TEXT) {
-        fail("<{$name}> holds more than {MAX_TEXT} characters; not an eSCL document");
+        failLimit("<{$name}> holds more than {MAX_TEXT} characters; not an eSCL document");
     }
     return printable($t);
 }
@@ -1265,7 +1327,7 @@ func union(into as list of string, more as list of string) {
         }
     }
     if (len($into) > MAX_ITEMS) {
-        fail("a list has more than {MAX_ITEMS} entries; not an eSCL document");
+        failLimit("a list has more than {MAX_ITEMS} entries; not an eSCL document");
     }
     return $into;
 }
@@ -1369,7 +1431,7 @@ func readInput(caps as xml.Value, source as string, duplex as bool) {
         $in2.intents = union($in2.intents, textsAt($si, "SupportedIntent"));
     }
     if (len($in2.resolutions) > MAX_ITEMS or len($in2.resolutionRanges) > MAX_ITEMS) {
-        fail("the {$source} capabilities list more than {MAX_ITEMS} resolutions");
+        failLimit("the {$source} capabilities list more than {MAX_ITEMS} resolutions");
     }
     $in2.resolutions = lists.sort($in2.resolutions);
     return $in2;
@@ -1872,24 +1934,25 @@ export func start(s as Scanner, caps as Capabilities, st as Settings) {
     }
     def r as Reply init sendPatiently($s, "POST", $s.base + "/ScanJobs", $body, MAX_DOC_BYTES);
     if ($r.status == 409) {
-        fail("the scanner refused the job (HTTP 409): it is busy, or the input is empty" +
-            detail($r));
+        failReply(
+            "the scanner refused the job (HTTP 409): it is busy, or the input is empty" +
+                detail($r),
+            $r);
     }
     if ($r.status == 503) {
-        fail("the scanner stayed busy for {$s.options.busyWaitMs} ms");
+        failReply("the scanner stayed busy for {$s.options.busyWaitMs} ms", $r);
     }
     if ($r.status != 201 and $r.status != 200) {
-        fail("the scanner refused the job: " + refusal($s, $r));
+        failReply("the scanner refused the job: " + refusal($s, $r), $r);
     }
     def url as string init "";
     try {
         $url = jobUrl($s, $r.location);
     } catch (e) {
-        throw Error{
-            kind: "escl",
-            message: $e.message +
-                "; the job was created and cannot be cancelled, so the scanner may stay busy until it gives up on it"
-        };
+        # jobUrl only fails with an EsclError
+        throw withNote(
+            $e,
+            "; the job was created and cannot be cancelled, so the scanner may stay busy until it gives up on it");
     }
     return Job{scanner: $s, url: $url, pages: 0, bytes: 0, platen: $st.source == PLATEN};
 }
@@ -1937,10 +2000,10 @@ export func nextPage(job as Job) {
         return Page{done: true, contentType: "", data: $none};
     }
     if ($r.status == 503) {
-        fail("page {$n} was not ready within {$job.scanner.options.busyWaitMs} ms");
+        failReply("page {$n} was not ready within {$job.scanner.options.busyWaitMs} ms", $r);
     }
     if ($r.status != 200) {
-        fail("page {$n}: " + refusal($job.scanner, $r));
+        failReply("page {$n}: " + refusal($job.scanner, $r), $r);
     }
     if (len($r.body) == 0) {
         fail("page {$n} is empty");
@@ -1962,25 +2025,24 @@ export func nextPage(job as Job) {
 export func cancel(job as Job) {
     def r as Reply init send($job.scanner, "DELETE", $job.url, "", MAX_DOC_BYTES);
     if ($r.status != 200 and $r.status != 204 and $r.status != 404) {
-        fail("cancel: " + refusal($job.scanner, $r));
+        failReply("cancel: " + refusal($job.scanner, $r), $r);
     }
 }
 
 /**
  * Cancel a job after a failure. The error that led here is the one to
- * report, its kind kept; a failure to cancel is added to its message.
+ * report, its kind kept; what this returns is added to its message.
  *
  * @param job {Job} the job
- * @param err {Error} the error that stopped the job
- * @return {Error} the error to throw
+ * @return {string} `""`, or why cancelling failed too
  */
-func abandon(job as Job, err as Error) {
+func cancelNote(job as Job) {
     try {
         cancel($job);
     } catch (e) {
-        $err.message = $err.message + "; cancelling the job failed too: " + $e.message;
+        return "; cancelling the job failed too: " + $e.message;
     }
-    return $err;
+    return "";
 }
 
 /**
@@ -2085,7 +2147,19 @@ export func scan(s as Scanner, st as Settings) {
         }
         finish($job);
     } catch (e) {
-        throw abandon($job, $e);
+        def note as string init cancelNote($job);
+        if ($e.kind == "escl") {
+            throw withNote($e, $note);
+        }
+        def err as Error;
+        try {
+            $err = $e;
+        } catch (notAnError) {
+            # a handler's own struct keeps its message
+            throw $e;
+        }
+        $err.message = $err.message + $note;
+        throw $err;
     }
     return $pages;
 }
@@ -2109,7 +2183,7 @@ export func imageInfo(job as Job) {
         fail("the scanner offers no ScanImageInfo for this job");
     }
     if ($r.status != 200) {
-        fail("GET ScanImageInfo: " + refusal($job.scanner, $r));
+        failReply("GET ScanImageInfo: " + refusal($job.scanner, $r), $r);
     }
     def root as xml.Value init decodeAs(textOf($r, "ScanImageInfo"), "ScanImageInfo");
     return ImageInfo{
@@ -2146,7 +2220,19 @@ export func scanEach(s as Scanner, st as Settings, handler as func) {
         }
         finish($job);
     } catch (e) {
-        throw abandon($job, $e);
+        def note as string init cancelNote($job);
+        if ($e.kind == "escl") {
+            throw withNote($e, $note);
+        }
+        def err as Error;
+        try {
+            $err = $e;
+        } catch (notAnError) {
+            # a handler's own struct keeps its message
+            throw $e;
+        }
+        $err.message = $err.message + $note;
+        throw $err;
     }
     return $job.pages;
 }
@@ -2158,15 +2244,15 @@ export func scanEach(s as Scanner, st as Settings, handler as func) {
  * @param job {Job} the job, pages and bytes counted so far
  * @param p {Page} the page just fetched
  * @return {Job} the job with the page counted
- * @throws {Error} kind "escl" if the page goes over either limit
+ * @throws {Error} kind "limit" if the page goes over either limit
  */
 export func countPage(job as Job, p as Page) {
     def o as Options init $job.scanner.options;
     if ($job.pages >= $o.maxPages) {
-        fail("the job gave more than {$o.maxPages} pages; raise Options.maxPages for longer jobs");
+        failLimit("the job gave more than {$o.maxPages} pages; raise Options.maxPages for longer jobs");
     }
     if (len($p.data) > $o.maxJobBytes - $job.bytes) {
-        fail("the job's pages add up to more than {$o.maxJobBytes} bytes; raise Options.maxJobBytes for larger jobs");
+        failLimit("the job's pages add up to more than {$o.maxJobBytes} bytes; raise Options.maxJobBytes for larger jobs");
     }
     $job.pages = $job.pages + 1;
     $job.bytes = $job.bytes + len($p.data);
@@ -2322,11 +2408,16 @@ export func scanToFiles(s as Scanner, st as Settings, dir as string, stem as str
         }
         finish($job);
     } catch (e) {
-        def err as Error init abandon($job, $e);
+        def note as string init cancelNote($job);
         if (len($written) > 0) {
-            $err.message = $err.message + "; " + convert.toString(len($written)) +
+            $note = $note + "; " + convert.toString(len($written)) +
                 " page(s) were written, " + $written[0] + " to " + $written[len($written) - 1];
         }
+        if ($e.kind == "escl") {
+            throw withNote($e, $note);
+        }
+        def err as Error init $e;
+        $err.message = $err.message + $note;
         throw $err;
     }
     return $written;

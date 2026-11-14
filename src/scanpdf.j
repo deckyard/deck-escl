@@ -51,10 +51,39 @@ def const PLTE as int init 1347179589;
  * Throw an escl error.
  *
  * @param message {string} what went wrong, without the `escl: ` prefix
- * @throws {Error} kind "escl", always
+ * @throws {escl.EsclError} kind "escl", always
  */
 func fail(message as string) {
-    throw Error{kind: "escl", message: "escl: " + $message};
+    throw escl.EsclError{kind: "escl", message: "escl: " + $message, status: 0, retryAfterMs: -1};
+}
+
+/**
+ * Throw an escl error with its fields given, to rethrow a caught one with
+ * more text: a caught `escl.EsclError` does not pass as a parameter of that
+ * type (jennifer at 0.26.0-dev).
+ *
+ * @param message {string} the whole message
+ * @param status {int} the HTTP status, 0 for none
+ * @param retryAfterMs {int} the `Retry-After` in ms, -1 for none
+ * @throws {escl.EsclError} kind "escl", always
+ */
+func failAs(message as string, status as int, retryAfterMs as int) {
+    throw escl.EsclError{
+        kind: "escl",
+        message: $message,
+        status: $status,
+        retryAfterMs: $retryAfterMs
+    };
+}
+
+/**
+ * Throw a reached cap: kind "limit", the message as an escl error's.
+ *
+ * @param message {string} what went wrong, without the `escl: ` prefix
+ * @throws {Error} kind "limit", always
+ */
+func failLimit(message as string) {
+    throw Error{kind: "limit", message: "escl: " + $message};
 }
 
 /**
@@ -193,12 +222,12 @@ func pngSize(data as bytes, n as int) {
         } elseif (not $seenData) {
             $before = $before + 1;
             if ($before > MAX_CHUNKS) {
-                fail("page {$n} is a PNG with more than {MAX_CHUNKS} chunks before its image data");
+                failLimit("page {$n} is a PNG with more than {MAX_CHUNKS} chunks before its image data");
             }
         }
         $chunks = $chunks + 1;
         if ($chunks > $limit) {
-            fail("page {$n} is a PNG of more than {$limit} chunks");
+            failLimit("page {$n} is a PNG of more than {$limit} chunks");
         }
         def next as int init $at + 12 + be($data, $at, 4, $n);
         if ($next > len($data)) {
@@ -226,7 +255,7 @@ func jpegSize(data as bytes, n as int) {
     while (true) {
         $segments = $segments + 1;
         if ($segments > MAX_SEGMENTS) {
-            fail("page {$n} is a JPEG with more than {MAX_SEGMENTS} segments before its frame header");
+            failLimit("page {$n} is a JPEG with more than {MAX_SEGMENTS} segments before its frame header");
         }
         if ($at + 4 > len($data) or $data[$at] != 255) {
             fail("page {$n} is a malformed JPEG");
@@ -355,7 +384,13 @@ export func scanToPdf(s as escl.Scanner, st as escl.Settings, path as string) {
     try {
         $job = escl.start($s, escl.capabilities($s), $st);
     } catch (e) {
-        throw releasing($path, $e);
+        def note as string init releaseNote($path);
+        if ($e.kind == "escl") {
+            failAs($e.message + $note, $e.status, $e.retryAfterMs);
+        }
+        def err as Error init $e;
+        $err.message = $err.message + $note;
+        throw $err;
     }
     def pages as list of escl.Page init [];
     try {
@@ -369,13 +404,27 @@ export func scanToPdf(s as escl.Scanner, st as escl.Settings, path as string) {
         }
         escl.finish($job);
     } catch (e) {
-        throw keep(releasing($path, stopJob($job, $e)), $pages, $path);
+        def note as string init stopNote($job);
+        $note = $note + releaseNote($path);
+        $note = $note + keepNote($pages, $path);
+        if ($e.kind == "escl") {
+            failAs($e.message + $note, $e.status, $e.retryAfterMs);
+        }
+        def err as Error init $e;
+        $err.message = $err.message + $note;
+        throw $err;
     }
     def data as bytes;
     try {
         $data = build($pages, $st.resolution);
     } catch (e) {
-        throw keep(releasing($path, $e), $pages, $path);
+        def note as string init releaseNote($path) + keepNote($pages, $path);
+        if ($e.kind == "escl") {
+            failAs($e.message + $note, $e.status, $e.retryAfterMs);
+        }
+        def err as Error init $e;
+        $err.message = $err.message + $note;
+        throw $err;
     }
     # the empty claim goes, then one exclusive create: a file or link that
     # appeared meanwhile is refused
@@ -383,32 +432,25 @@ export func scanToPdf(s as escl.Scanner, st as escl.Settings, path as string) {
         release($path);
         fs.writeNew($path, $data);
     } catch (e) {
-        throw keep(
-            Error{
-                kind: "escl",
-                message: "escl: cannot write " + quoted($path) + ": " + clip($e.message)
-            },
-            $pages,
-            $path);
+        fail("cannot write " + quoted($path) + ": " + clip($e.message) + keepNote($pages, $path));
     }
     return len($pages);
 }
 
 /**
  * Cancel a job that failed, as `escl.scan` does: the error keeps its kind,
- * and a failure to cancel is added to its message.
+ * and what this returns is added to its message.
  *
  * @param job {escl.Job} the job
- * @param err {Error} why it stopped
- * @return {Error} the error to report
+ * @return {string} `""`, or why cancelling failed too
  */
-func stopJob(job as escl.Job, err as Error) {
+func stopNote(job as escl.Job) {
     try {
         escl.cancel($job);
     } catch (e) {
-        $err.message = $err.message + "; cancelling the job failed too: " + $e.message;
+        return "; cancelling the job failed too: " + $e.message;
     }
-    return $err;
+    return "";
 }
 
 /**
@@ -454,10 +496,9 @@ func release(path as string) {
  * name that cannot be given back is added to its message.
  *
  * @param path {string} the file
- * @param err {Error} the failure
- * @return {Error} the error to report
+ * @return {string} `""`, or why the name could not be given back
  */
-func releasing(path as string, err as Error) {
+func releaseNote(path as string) {
     try {
         release($path);
     } catch (e) {
@@ -465,9 +506,9 @@ func releasing(path as string, err as Error) {
         if (strings.startsWith($why, "escl: ")) {
             $why = strings.substring($why, 6);
         }
-        $err.message = $err.message + "; " + $why;
+        return "; " + $why;
     }
-    return $err;
+    return "";
 }
 
 /**
@@ -476,14 +517,14 @@ func releasing(path as string, err as Error) {
  * `<path without .pdf>-NNN.<ext>`, or `-2-NNN`, `-3-NNN`, ... when one of
  * those is taken; a page that cannot be written does not stop the others.
  *
- * @param err {Error} why the PDF could not be made
  * @param pages {list of escl.Page} the pages
  * @param path {string} the PDF file
- * @return {Error} the error, naming the pages kept
+ * @return {string} `""` without pages, else the text to add to the error, naming the pages kept
  */
-func keep(err as Error, pages as list of escl.Page, path as string) {
+func keepNote(pages as list of escl.Page, path as string) {
+    def out as string init "";
     if (len($pages) == 0) {
-        return $err;
+        return $out;
     }
     def base as string init $path;
     if (strings.endsWith(strings.lower($base), ".pdf")) {
@@ -495,10 +536,9 @@ func keep(err as Error, pages as list of escl.Page, path as string) {
     }
     def stem as string init freeStem($base, $pages, $width);
     if ($stem == "") {
-        $err.message = $err.message + "; the scanned pages could not be kept: the names " +
+        return "; the scanned pages could not be kept: the names " +
             quoted(keptName($base, 1, $width, $pages[0])) + " to " +
             quoted(keptName($base + "-{MAX_STEMS}", 1, $width, $pages[0])) + " are taken";
-        return $err;
     }
     def kept as list of string init [];
     def failed as int init 0;
@@ -516,15 +556,15 @@ func keep(err as Error, pages as list of escl.Page, path as string) {
         }
     }
     if (len($kept) > 0) {
-        $err.message = $err.message + "; " + convert.toString(len($kept)) + " of the " +
+        $out = $out + "; " + convert.toString(len($kept)) + " of the " +
             convert.toString(len($pages)) + " scanned page(s) were kept as " + quoted($kept[0]) +
             " to " + quoted($kept[len($kept) - 1]);
     }
     if ($failed > 0) {
-        $err.message = $err.message + "; " + convert.toString($failed) +
+        $out = $out + "; " + convert.toString($failed) +
             " page(s) could not be kept, the first at " + $firstFailure;
     }
-    return $err;
+    return $out;
 }
 
 /**

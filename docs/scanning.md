@@ -39,7 +39,8 @@ a second.
 A feeder job is refused before it starts when the scanner reports the feeder
 empty, jammed, open or misfed (`ScannerAdfJam`, `ScannerAdfHatchOpen`, ...). Every whole-job call (`scan`, `scanEach`, `scanToFiles`,
 `scanpdf.scanToPdf`) stops a job past `Options.maxPages` pages (500) or
-`Options.maxJobBytes` bytes in all (1 GiB), and each page is at most
+`Options.maxJobBytes` bytes in all (1 GiB), both with `Error{kind: "limit"}`,
+and each page is at most
 `maxPageBytes` (256 MiB); together they bound what a scanner that never ends
 a job can make the deck hold or write. A format the scanner can produce as one multi-page document (often
 `application/pdf` from a feeder) may arrive as a single page.

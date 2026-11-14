@@ -23,13 +23,17 @@ binary, not `jennifer-tiny`.
 Lengths are in the protocol's unit, 1/300 inch: A4 is 2480 x 3508, US Letter
 2550 x 3300. `escl.fromMm(210.0)` converts.
 
-Errors: every failure the deck raises is an `Error` of kind `"escl"` whose
-message starts with `escl: ` - a setting the scanner does not offer (named,
-with what it does offer), an empty feeder, a refused or aborted job (with the
-scanner's reasons, e.g. a paper jam), an unreachable scanner, a malformed or
-oversized reply, a job past its page or byte limit. The one exception is an
-error your own `scanEach` handler throws: it reaches you with its own kind,
-and if cancelling the job then fails too, that is added to its message.
+Errors: every failure the deck raises has a message that starts with
+`escl: `. Most are an `escl.EsclError` of kind `"escl"`: a setting the scanner
+does not offer (named, with what it does offer), an empty feeder, a refused
+or aborted job (with the scanner's reasons, e.g. a paper jam), an unreachable
+scanner, a malformed reply. Its `status` is the HTTP status of a refused
+request (0 otherwise) and `retryAfterMs` the scanner's `Retry-After` (-1 when
+it gave none), so a busy scanner (503) says how long to wait. A reached cap is
+`Error{kind: "limit"}`: an oversized reply or document, a job past its page
+or byte limit, an image with too many PNG chunks or JPEG segments. An error
+your own `scanEach` handler throws reaches you with its own kind, and if
+cancelling the job then fails too, that is added to its message.
 
 Text the deck returns from a scanner (`makeAndModel`, `state`, job reasons,
 a page's `contentType`, discovered names, ...) has every control character

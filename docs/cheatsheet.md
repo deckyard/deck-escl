@@ -9,7 +9,7 @@ Every export of `@deckyard/escl`. The guide is [Scanning](scanning.md).
 import "@deckyard/escl/" as escl;
 ```
 
-Lengths are in 1/300 inch. Every error the deck raises is kind `"escl"`; a `scanEach` handler's own error keeps its kind (a failed cancel is added to its message). Text from a scanner comes back with control, bidirectional-text and invisible format characters as `?`. A login belongs in `Options`; an address holding `@` is refused.
+Lengths are in 1/300 inch. Every error the deck raises is an `EsclError` (kind `"escl"`), except a reached cap (an oversized reply or document, `maxPages`, `maxJobBytes`, too many PNG chunks or JPEG segments): `Error{kind: "limit"}`; a `scanEach` handler's own error keeps its kind (a failed cancel is added to its message). Text from a scanner comes back with control, bidirectional-text and invisible format characters as `?`. A login belongs in `Options`; an address holding `@` is refused.
 
 ## Scanners
 
@@ -74,6 +74,17 @@ import "@deckyard/escl/scanpdf.j" as scanpdf;
 | `escl.DEFAULT_MAX_JOB_BYTES` | `1073741824` | the most bytes one job may give (1 GiB) |
 
 ## Types
+
+### `EsclError`
+
+Every error of kind `"escl"`.
+
+| Field | Meaning |
+|---|---|
+| `kind as string` | always `"escl"` |
+| `message as string` | `escl: <what went wrong>` |
+| `status as int` | the HTTP status the scanner answered (401, 409, 503, ...); 0 when the failure is not a refused request |
+| `retryAfterMs as int` | the reply's `Retry-After` in ms when given in seconds (a busy scanner); -1 if none |
 
 ### `Options`
 

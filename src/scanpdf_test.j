@@ -432,12 +432,20 @@ func testHeaderWalksAreBounded() {
     for (def k in 0..len($cases)) {
         def t0 as time.Time init time.now();
         def msg as string init "";
+        def kind as string init "";
         try {
             build([$cases[$k]], 300);
         } catch (e) {
             $msg = $e.message;
+            $kind = $e.kind;
         }
         testing.assertContains($msg, "escl: page 1 " + $wants[$k]);
+        # the chunk and segment budgets are reached caps; the rest are format rules
+        if ($k < 2) {
+            testing.assertEqual($kind, "limit");
+        } else {
+            testing.assertEqual($kind, "escl");
+        }
         testing.assertTrue(time.milliseconds(time.sub(time.now(), $t0)) < 1000);
     }
     # 200000 empty image-data chunks is a flood, refused fast
@@ -449,12 +457,15 @@ func testHeaderWalksAreBounded() {
     def floodPage as escl.Page init pngOf($flood);
     def t0 as time.Time init time.now();
     def msg as string init "";
+    def kind as string init "";
     try {
         build([$floodPage], 300);
     } catch (e) {
         $msg = $e.message;
+        $kind = $e.kind;
     }
     testing.assertContains($msg, "is a PNG of more than 2407 chunks");
+    testing.assertEqual($kind, "limit");
     testing.assertTrue(time.milliseconds(time.sub(time.now(), $t0)) < 1000);
     # chunks after the image data, as encoders write them, pass the walk
     testing.assertEqual(imageSize(pngOf(["IDAT", "IDAT", "tEXt", "IEND"]).data, 1).width, 256);
@@ -623,12 +634,19 @@ func testAFailedReleaseKeepsTheFirstError() {
     fs.writeNew($sub + "/out.pdf", "");
     fs.chmod($sub, 365);
     defer fs.chmod($sub, 493);
-    def err as Error init releasing(
-        $sub + "/out.pdf",
-        Error{kind: "escl", message: "escl: the scanner aborted the job"});
-    testing.assertEqual($err.kind, "escl");
-    testing.assertContains(
-        $err.message,
-        "escl: the scanner aborted the job; cannot remove the empty ");
-    testing.assertFalse(strings.contains($err.message, "; escl: "));
+    def note as string init releaseNote($sub + "/out.pdf");
+    testing.assertTrue(strings.startsWith($note, "; cannot remove the empty "));
+    testing.assertFalse(strings.contains($note, "escl: "));
+}
+
+# A failed job rethrown with the pages kept keeps the escl error's fields.
+func testARethrownEsclErrorKeepsItsFields() {
+    try {
+        failAs("escl: page 3: HTTP 503; 2 of the 2 scanned page(s) were kept", 503, 2000);
+        throw Error{kind: "missed", message: "failAs did not throw"};
+    } catch (e) {
+        testing.assertEqual($e.kind, "escl");
+        testing.assertEqual($e.status, 503);
+        testing.assertEqual($e.retryAfterMs, 2000);
+    }
 }

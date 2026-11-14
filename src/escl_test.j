@@ -541,11 +541,15 @@ func testParseCapabilitiesRefusesBadDocuments() {
     $cases[$caps + "<MaxWidth>-1</MaxWidth><MaxHeight>9</MaxHeight>" + $end] = "<MaxWidth> must be a number";
     for (def text in $cases) {
         def msg as string init "";
+        def kind as string init "";
         try {
             parseCapabilities($text);
         } catch (e) {
             $msg = $e.message;
+            $kind = $e.kind;
         }
+        # a malformed document is the deck's error, not a reached cap
+        testing.assertEqual($kind, "escl");
         testing.assertContains($msg, $cases[$text]);
     }
 }
@@ -999,11 +1003,14 @@ func testPageCapStopsARunawayJob() {
     def s as Scanner init on($f);
     $s.options.maxPages = 2;
     def msg as string init "";
+    def kind as string init "";
     try {
         scan($s, feederSettings(false));
     } catch (e) {
         $msg = $e.message;
+        $kind = $e.kind;
     }
+    testing.assertEqual($kind, "limit");
     def seen as list of Seen init stopFake($f);
     testing.assertEqual(
         $msg,
@@ -1785,14 +1792,21 @@ func testRetryAfterNeverPassesTheDeadline() {
     $s.options.busyWaitMs = 300;
     def t0 as time.Time init time.now();
     def msg as string init "";
+    def code as int init 0;
+    def retry as int init 0;
     try {
         status($s);
     } catch (e) {
         $msg = $e.message;
+        $code = $e.status;
+        $retry = $e.retryAfterMs;
     }
     def took as int init time.milliseconds(time.sub(time.now(), $t0));
     stopFake($f);
     testing.assertEqual($msg, "escl: GET ScannerStatus: HTTP 503");
+    # the scanner's Retry-After reaches the error
+    testing.assertEqual($code, 503);
+    testing.assertEqual($retry, 5000);
     testing.assertTrue($took >= 300 and $took < 1500);
 }
 
@@ -1815,11 +1829,14 @@ func testHostileCapabilitiesFailFast() {
     for (def text in $cases) {
         def t0 as time.Time init time.now();
         def msg as string init "";
+        def kind as string init "";
         try {
             parseCapabilities($text);
         } catch (e) {
             $msg = $e.message;
+            $kind = $e.kind;
         }
+        testing.assertEqual($kind, "limit");
         testing.assertContains($msg, $cases[$text]);
         testing.assertTrue(time.milliseconds(time.sub(time.now(), $t0)) < 3000);
     }
@@ -1852,11 +1869,14 @@ func testJobBytesAreCapped() {
     def s as Scanner init on($f);
     $s.options.maxJobBytes = 10;
     def msg as string init "";
+    def kind as string init "";
     try {
         scanEach($s, feederSettings(false), checkLength);
     } catch (e) {
         $msg = $e.message;
+        $kind = $e.kind;
     }
+    testing.assertEqual($kind, "limit");
     def seen as list of Seen init stopFake($f);
     testing.assertEqual(
         $msg,
@@ -2375,4 +2395,16 @@ func testAnAnswerOverTheLabelBudgetIsSkipped() {
     net.close($sock);
     testing.assertEqual(len($found), 1);
     testing.assertEqual($found[0].name, "Real");
+}
+
+# A local failure is an EsclError with no status and no Retry-After.
+func testALocalFailureIsAnEsclError() {
+    try {
+        scanner("http://a b");
+        throw Error{kind: "missed", message: "scanner did not throw"};
+    } catch (e) {
+        testing.assertEqual($e.kind, "escl");
+        testing.assertEqual($e.status, 0);
+        testing.assertEqual($e.retryAfterMs, -1);
+    }
 }
