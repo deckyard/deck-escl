@@ -1,6 +1,6 @@
 [package]
 name = "@deckyard/escl"
-version = "0.1.0"
+version = "0.2.0"
 description = "Network document scanners over eSCL (AirScan, Mopria): find them, read what they offer, scan to pages, files or PDF"
 license = "LGPL-3.0-only"
 authors = ["mplx <mplx@jennifer-lang.dev>"]
