@@ -15,6 +15,7 @@
  * namespace). They are written for these tests, not captured from devices.
  */
 use httpd;
+use net;
 use task;
 use testing;
 
@@ -891,19 +892,122 @@ func testMissingLocationIsAnError() {
 func testUnreachableScanner() {
     def o as Options;
     $o.timeoutMs = 2000;
-    def s as Scanner init scannerWith("127.0.0.1:1", $o);
-    def msg as string init "";
-    def kind as string init "";
+    def s as Scanner init scannerWith(closedAddress(), $o);
+    def caught as bool init false;
     try {
         status($s);
     } catch (e) {
-        $msg = $e.message;
-        $kind = $e.kind;
+        $caught = true;
+        # net's NetError, passed on with its fields
+        testing.assertEqual($e.kind, "net");
+        def ne as net.NetError init $e;
+        testing.assertEqual($ne.reason, "refused");
+        testing.assertEqual($ne.op, "connect");
+        testing.assertFalse($ne.sent);
     }
-    testing.assertEqual($kind, "escl");
-    testing.assertTrue(strings.startsWith(
-        $msg,
-        "escl: GET http://127.0.0.1:1/eSCL/ScannerStatus: "));
+    testing.assertTrue($caught);
+}
+
+/**
+ * A loopback address nothing listens on.
+ *
+ * @return {string} `127.0.0.1:<port>`
+ */
+func closedAddress() {
+    def server as net.Listener init net.listen("127.0.0.1:0");
+    def address as string init net.address($server);
+    net.close($server);
+    return $address;
+}
+
+/**
+ * Read one HTTP request, head and body, from a connection.
+ *
+ * @param conn {net.Conn} the connection
+ */
+func readRequest(conn as net.Conn) {
+    def got as string init "";
+    while (not strings.contains($got, "\r\n\r\n")) {
+        $got = $got + convert.stringFromBytes("utf-8", net.readBytes($conn, 4096));
+    }
+    def head as string init strings.substring($got, 0, strings.indexOf($got, "\r\n\r\n") + 4);
+    def want as int init 0;
+    for (def line in strings.split(strings.lower($head), "\r\n")) {
+        if (strings.startsWith($line, "content-length:")) {
+            $want = convert.toInt(strings.trim(strings.substring($line, 15)));
+        }
+    }
+    def body as int init len(convert.bytesFromString("utf-8", $got)) -
+        len(convert.bytesFromString("utf-8", $head));
+    while ($body < $want) {
+        $body = $body + len(net.readBytes($conn, 4096));
+    }
+}
+
+/**
+ * A scanner that answers these replies, one connection each, then resets
+ * the next connection and stops listening: it vanishes in mid-job.
+ *
+ * @param server {net.Listener} where it listens
+ * @param replies {list of Canned} the replies, in order
+ * @return {bool} true once it is gone
+ */
+func vanishingScanner(server as net.Listener, replies as list of Canned) {
+    for (def r in $replies) {
+        def conn as net.Conn init net.accept($server);
+        readRequest($conn);
+        def head as string init "HTTP/1.1 {$r.status} X\r\nConnection: close\r\n" +
+            "Content-Length: " + convert.toString(len($r.body)) + "\r\n";
+        if ($r.contentType != "") {
+            $head = $head + "Content-Type: {$r.contentType}\r\n";
+        }
+        if ($r.location != "") {
+            $head = $head + "Location: {$r.location}\r\n";
+        }
+        net.writeBytes($conn, convert.bytesFromString("utf-8", $head + "\r\n"));
+        net.writeBytes($conn, $r.body);
+        net.close($conn);
+    }
+    def last as net.Conn init net.accept($server);
+    readRequest($last);
+    net.abort($last);
+    net.close($server);
+    return true;
+}
+
+# A scanner that goes away in mid-job: the NetError reaches the caller with
+# its fields, the failed cancel and the pages written noted in its message.
+func testAScannerThatVanishesIsANetError() {
+    def dir as string init fs.makeTempDir();
+    defer fs.removeAll($dir);
+    def server as net.Listener init net.listen("127.0.0.1:0");
+    def address as string init net.address($server);
+    def replies as list of Canned init [
+        xmlReply(EPSON_CAPS),
+        xmlReply(statusXml("ScannerAdfLoaded", "", "")),
+        created("/eSCL/ScanJobs/42"),
+        pageReply("image/jpeg", "one")
+    ];
+    def gone as task of bool init spawn {
+        return vanishingScanner($server, $replies);
+    };
+    def o as Options;
+    $o.timeoutMs = 5000;
+    def caught as bool init false;
+    try {
+        scanToFiles(scannerWith($address, $o), feederSettings(false), $dir, "letter");
+    } catch (e) {
+        $caught = true;
+        testing.assertEqual($e.kind, "net");
+        def ne as net.NetError init $e;
+        testing.assertEqual($ne.reason, "reset");
+        testing.assertTrue($ne.sent);
+        testing.assertContains($ne.message, "cancelling the job failed too");
+        testing.assertContains($ne.message, "1 page(s) were written");
+    }
+    testing.assertTrue($caught);
+    task.wait($gone);
+    testing.assertTrue(fs.exists($dir + "/letter-001.jpg"));
 }
 
 func testScanToFiles() {
@@ -1919,14 +2023,19 @@ func testDeadlineEndsASlowRequest() {
     def s as Scanner init scannerWith(httpd.address($srv), $o);
     def t0 as time.Time init time.now();
     def msg as string init "";
+    def kind as string init "";
     try {
         capabilities($s);
     } catch (e) {
         $msg = $e.message;
+        $kind = $e.kind;
     }
     def took as int init time.milliseconds(time.sub(time.now(), $t0));
     task.wait($t);
     httpd.shutdown($srv);
+    # the deadline is the generic kind "timeout"
+    testing.assertEqual($kind, "timeout");
+    testing.assertTrue(strings.startsWith($msg, "escl: GET "));
     testing.assertContains($msg, "no complete reply within 200 ms (Options.deadlineMs)");
     testing.assertTrue($took < 1000);
     # a fast reply within the deadline is untouched
@@ -1938,6 +2047,25 @@ func testDeadlineEndsASlowRequest() {
     testing.assertEqual(capabilities(scannerWith(httpd.address($srv2), $o)).version, "2.63");
     task.wait($t2);
     httpd.shutdown($srv2);
+}
+
+# A read that stalls past timeoutMs is http's "timeout", passed on.
+func testAStalledReadIsATimeout() {
+    def srv as httpd.Server init httpd.listen("127.0.0.1:0");
+    def t as task of int init spawn {
+        return answerLate($srv, 1500);
+    };
+    def o as Options;
+    $o.timeoutMs = 200;
+    def kind as string init "";
+    try {
+        capabilities(scannerWith(httpd.address($srv), $o));
+    } catch (e) {
+        $kind = $e.kind;
+    }
+    task.wait($t);
+    httpd.shutdown($srv);
+    testing.assertEqual($kind, "timeout");
 }
 
 func testADanglingLinkIsNotWrittenThrough() {

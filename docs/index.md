@@ -26,12 +26,20 @@ Lengths are in the protocol's unit, 1/300 inch: A4 is 2480 x 3508, US Letter
 Errors: every failure the deck raises has a message that starts with
 `escl: `. Most are an `escl.EsclError` of kind `"escl"`: a setting the scanner
 does not offer (named, with what it does offer), an empty feeder, a refused
-or aborted job (with the scanner's reasons, e.g. a paper jam), an unreachable
-scanner, a malformed reply. Its `status` is the HTTP status of a refused
+or aborted job (with the scanner's reasons, e.g. a paper jam), a malformed
+reply. Its `status` is the HTTP status of a refused
 request (0 otherwise) and `retryAfterMs` the scanner's `Retry-After` (-1 when
 it gave none), so a busy scanner (503) says how long to wait. A reached cap is
 `Error{kind: "limit"}`: an oversized reply or document, a job past its page
-or byte limit, an image with too many PNG chunks or JPEG segments. An error
+or byte limit, an image with too many PNG chunks or JPEG segments. A read
+that stalls past `Options.timeoutMs`, or a request past
+`Options.deadlineMs`, is kind `"timeout"`; a connection the scanner closes
+mid-reply `"closed"`; a cancelled task `"cancelled"`. A scanner
+the deck cannot reach, or one that resets or drops the connection, is the
+`net.NetError` (kind `"net"`) that `net` threw: `reason` says `refused`,
+`reset`, `unreachable`, `dns` or `tls`, and `sent` / `replied` what had got
+through; anything the deck adds (a cancel that failed too, the pages written
+or kept) is appended to its message, its fields stay as they were. An error
 your own `scanEach` handler throws reaches you with its own kind, and if
 cancelling the job then fails too, that is added to its message.
 

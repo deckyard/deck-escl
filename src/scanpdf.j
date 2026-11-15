@@ -15,6 +15,7 @@
 use convert;
 use fs;
 use math;
+use net;
 use regex;
 use strings;
 
@@ -388,6 +389,12 @@ export func scanToPdf(s as escl.Scanner, st as escl.Settings, path as string) {
         if ($e.kind == "escl") {
             failAs($e.message + $note, $e.status, $e.retryAfterMs);
         }
+        if ($e.kind == "net") {
+            # a network failure stays the net.NetError net threw, noted
+            def ne as net.NetError init $e;
+            $ne.message = $ne.message + $note;
+            throw $ne;
+        }
         def err as Error init $e;
         $err.message = $err.message + $note;
         throw $err;
@@ -410,6 +417,12 @@ export func scanToPdf(s as escl.Scanner, st as escl.Settings, path as string) {
         if ($e.kind == "escl") {
             failAs($e.message + $note, $e.status, $e.retryAfterMs);
         }
+        if ($e.kind == "net") {
+            # a network failure stays the net.NetError net threw, noted
+            def ne as net.NetError init $e;
+            $ne.message = $ne.message + $note;
+            throw $ne;
+        }
         def err as Error init $e;
         $err.message = $err.message + $note;
         throw $err;
@@ -421,6 +434,12 @@ export func scanToPdf(s as escl.Scanner, st as escl.Settings, path as string) {
         def note as string init releaseNote($path) + keepNote($pages, $path);
         if ($e.kind == "escl") {
             failAs($e.message + $note, $e.status, $e.retryAfterMs);
+        }
+        if ($e.kind == "net") {
+            # a network failure stays the net.NetError net threw, noted
+            def ne as net.NetError init $e;
+            $ne.message = $ne.message + $note;
+            throw $ne;
         }
         def err as Error init $e;
         $err.message = $err.message + $note;

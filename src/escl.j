@@ -495,6 +495,32 @@ func withNote(err as EsclError, note as string) {
 }
 
 /**
+ * Whether a caught error has a kind every library shares, which a wrapper
+ * passes on as it is: a reached cap, a deadline, a closed connection, a
+ * cancelled task or a network failure (a `net.NetError`).
+ *
+ * @param kind {string} the error's kind
+ * @return {bool} whether it passes on
+ */
+func generic(kind as string) {
+    return lists.contains(["limit", "timeout", "closed", "cancelled", "net"], $kind);
+}
+
+/**
+ * A network failure with a note added to its message: still the
+ * `net.NetError` `net` threw, every other field kept.
+ *
+ * @param err {net.NetError} the error
+ * @param note {string} what to add, `""` for nothing
+ * @return {net.NetError} the error with the note
+ */
+func netWithNote(err as net.NetError, note as string) {
+    def out as net.NetError init $err;
+    $out.message = $out.message + $note;
+    return $out;
+}
+
+/**
  * Text from a device, cut to 80 characters with control and bidirectional-text
  * characters as `?`,
  * fit for an error message.
@@ -858,7 +884,7 @@ func jobUrl(s as Scanner, location as string) {
  * @param body {string} the request body, `""` for none
  * @param maxBytes {int} the largest response body accepted
  * @return {Reply} the response
- * @throws {Error} kind "escl" if the request fails
+ * @throws {Error} kind "escl" if the request fails; kind "timeout" past a deadline, "closed" or "net" (a `net.NetError`) when the connection closes or fails
  */
 func send(s as Scanner, method as string, url as string, body as string, maxBytes as int) {
     def headers as map of string to string init requestHeaders($s, $url, $body);
@@ -884,6 +910,11 @@ func send(s as Scanner, method as string, url as string, body as string, maxByte
         # a body over maxBytes stays a reached cap
         if ($e.kind == "limit") {
             failLimit("{$method} {$url}: " + clip($e.message));
+        }
+        # the other kinds every library shares (a deadline, a closed
+        # connection, a cancelled task, a net.NetError) pass on as they are
+        if (generic($e.kind)) {
+            throw $e;
         }
         fail("{$method} {$url}: " + clip($e.message));
     }
@@ -994,7 +1025,7 @@ func requestBefore(
             task.discard($t);
             throw Error{
                 kind: "timeout",
-                message: "no complete reply within {$o.deadlineMs} ms (Options.deadlineMs)"
+                message: "escl: {$method} {$url}: no complete reply within {$o.deadlineMs} ms (Options.deadlineMs)"
             };
         }
         throw $e;
@@ -1013,7 +1044,7 @@ func requestBefore(
  * @param body {string} the request body, `""` for none
  * @param maxBytes {int} the largest response body accepted
  * @return {Reply} the first response that is not a 503, or the last 503
- * @throws {Error} kind "escl" if a request fails
+ * @throws {Error} kind "escl" if a request fails; kind "timeout" past a deadline, "closed" or "net" (a `net.NetError`) when the connection closes or fails
  */
 func sendPatiently(s as Scanner, method as string, url as string, body as string, maxBytes as int) {
     def began as time.Time init time.now();
@@ -1151,7 +1182,7 @@ func checkElements(root as xml.Value, name as string) {
  * @param s {Scanner} the scanner
  * @param name {string} the resource and its root element, e.g. `ScannerStatus`
  * @return {xml.Value} the root element
- * @throws {Error} kind "escl" if the request fails or the reply is not that document
+ * @throws {Error} kind "escl" if the request fails or the reply is not that document; kind "timeout" past a deadline, "closed" or "net" (a `net.NetError`) when the connection closes or fails
  */
 func document(s as Scanner, name as string) {
     def r as Reply init sendPatiently($s, "GET", $s.base + "/" + $name, "", MAX_DOC_BYTES);
@@ -1650,7 +1681,7 @@ export func parseStatus(text as string) {
  *
  * @param s {Scanner} the scanner
  * @return {Capabilities} what it can do
- * @throws {Error} kind "escl" if the request fails or the reply is unusable
+ * @throws {Error} kind "escl" if the request fails or the reply is unusable; kind "timeout" past a deadline, "closed" or "net" (a `net.NetError`) when the connection closes or fails
  */
 export func capabilities(s as Scanner) {
     return readCapabilities(document($s, "ScannerCapabilities"));
@@ -1661,7 +1692,7 @@ export func capabilities(s as Scanner) {
  *
  * @param s {Scanner} the scanner
  * @return {Status} its state, the feeder's and its jobs
- * @throws {Error} kind "escl" if the request fails or the reply is unusable
+ * @throws {Error} kind "escl" if the request fails or the reply is unusable; kind "timeout" past a deadline, "closed" or "net" (a `net.NetError`) when the connection closes or fails
  */
 export func status(s as Scanner) {
     return readStatus(document($s, "ScannerStatus"));
@@ -1980,7 +2011,7 @@ func mediaType(contentType as string) {
  *
  * @param job {Job} the job
  * @return {Page} the page, or `done`
- * @throws {Error} kind "escl" if the request fails or the scanner answers otherwise
+ * @throws {Error} kind "escl" if the request fails or the scanner answers otherwise; kind "timeout" past a deadline, "closed" or "net" (a `net.NetError`) when the connection closes or fails
  */
 export func nextPage(job as Job) {
     if ($job.platen and $job.pages >= 1) {
@@ -2128,7 +2159,7 @@ export func finish(job as Job) {
  * @param s {Scanner} the scanner
  * @param st {Settings} what to scan
  * @return {list of Page} the pages, in order
- * @throws {Error} kind "escl" if the settings are not offered, the scanner refuses, or the job fails
+ * @throws {Error} kind "escl" if the settings are not offered, the scanner refuses, or the job fails; kind "timeout" past a deadline, "closed" or "net" (a `net.NetError`) when the connection closes or fails
  * @example
  *   def pages as list of escl.Page init escl.scan(escl.scanner("192.168.1.40:8080"), escl.settings());
  */
@@ -2150,6 +2181,9 @@ export func scan(s as Scanner, st as Settings) {
         def note as string init cancelNote($job);
         if ($e.kind == "escl") {
             throw withNote($e, $note);
+        }
+        if ($e.kind == "net") {
+            throw netWithNote($e, $note);
         }
         def err as Error;
         try {
@@ -2223,6 +2257,9 @@ export func scanEach(s as Scanner, st as Settings, handler as func) {
         def note as string init cancelNote($job);
         if ($e.kind == "escl") {
             throw withNote($e, $note);
+        }
+        if ($e.kind == "net") {
+            throw netWithNote($e, $note);
         }
         def err as Error;
         try {
@@ -2416,6 +2453,9 @@ export func scanToFiles(s as Scanner, st as Settings, dir as string, stem as str
         if ($e.kind == "escl") {
             throw withNote($e, $note);
         }
+        if ($e.kind == "net") {
+            throw netWithNote($e, $note);
+        }
         def err as Error init $e;
         $err.message = $err.message + $note;
         throw $err;
@@ -2435,7 +2475,7 @@ export func scanToFiles(s as Scanner, st as Settings, dir as string, stem as str
  *
  * @param timeoutMs {int} how long to collect answers, 1 to 60000 ms (1000 to 3000 is usual)
  * @return {list of Found} the scanners, each once, in the order they answered
- * @throws {Error} kind "escl" if `timeoutMs` is out of range or the socket fails
+ * @throws {Error} kind "escl" if `timeoutMs` is out of range or the socket fails; kind "net" (a `net.NetError`) when the network fails
  * @example
  *   for (def f in escl.discover(2000)) {
  *       io.printf("%s at %s\n", $f.name, $f.url);
@@ -2451,7 +2491,7 @@ export func discover(timeoutMs as int) {
  * @param target {string} `host:port` to query
  * @param timeoutMs {int} how long to collect answers
  * @return {list of Found} the scanners
- * @throws {Error} kind "escl" if `timeoutMs` is out of range or the socket fails
+ * @throws {Error} kind "escl" if `timeoutMs` is out of range or the socket fails; kind "net" (a `net.NetError`) when the network fails
  */
 func discoverAt(target as string, timeoutMs as int) {
     if ($timeoutMs < 1 or $timeoutMs > 60000) {
@@ -2461,12 +2501,19 @@ func discoverAt(target as string, timeoutMs as int) {
     try {
         $sock = net.listenUDP("0.0.0.0:0");
     } catch (e) {
+        # a network failure is a net.NetError: passed on with its fields
+        if ($e.kind == "net") {
+            throw $e;
+        }
         fail("mDNS: cannot open a socket: " + clip($e.message));
     }
     defer net.close($sock);
     try {
         net.sendTo($sock, $target, mdnsQuery());
     } catch (e) {
+        if ($e.kind == "net") {
+            throw $e;
+        }
         fail("mDNS query to {$target}: " + clip($e.message));
     }
     def recs as Records init Records{ptrs: [], srvs: {}, txts: {}, addrs: {}, count: 0};
@@ -2484,6 +2531,9 @@ func discoverAt(target as string, timeoutMs as int) {
         } catch (e) {
             if ($e.kind == "timeout") {
                 break;
+            }
+            if ($e.kind == "net") {
+                throw $e;
             }
             fail("mDNS: " + clip($e.message));
         }

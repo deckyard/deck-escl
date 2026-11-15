@@ -14,6 +14,7 @@ use fs;
 use strings;
 use httpd;
 use images;
+use net;
 use task;
 use testing;
 use time;
@@ -484,14 +485,15 @@ func testScanToPdfNeedsAWritablePlaceFirst() {
     }
     testing.assertContains($msg, "cannot write");
     testing.assertFalse(strings.contains($msg, "GET"));
-    # a failed scan leaves no empty file behind
-    $msg = "";
+    # a failed scan leaves no empty file behind; nothing listens there, so
+    # the failure is net's NetError
+    def kind as string init "";
     try {
         scanToPdf($s, escl.settings(), $dir + "/out.pdf");
     } catch (e) {
-        $msg = $e.message;
+        $kind = $e.kind;
     }
-    testing.assertContains($msg, "GET");
+    testing.assertEqual($kind, "net");
     testing.assertFalse(fs.exists($dir + "/out.pdf"));
 }
 
@@ -588,6 +590,46 @@ func testScanToPdfKeepsThePagesOfAFailedJob() {
     testing.assertContains($msg, "2 of the 2 scanned page(s) were kept as");
     testing.assertFalse(fs.exists($dir + "/out.pdf"));
     testing.assertEqual(fs.readBytes($dir + "/out-002.jpg"), $one);
+}
+
+# A scanner that goes away in mid-job: the NetError reaches the caller with
+# its fields, the failed cancel and the kept pages noted in its message.
+func testAScannerThatVanishesIsANetError() {
+    def dir as string init fs.makeTempDir();
+    defer fs.removeAll($dir);
+    def one as bytes init imagePage("jpeg", 30, 60).data;
+    def replies as list of bytes init [
+        convert.bytesFromString("utf-8", CAPS),
+        convert.bytesFromString("utf-8", STATUS),
+        convert.bytesFromString("utf-8", "<post/>"),
+        $one
+    ];
+    def srv as httpd.Server init httpd.listen("127.0.0.1:0");
+    def t as task of int init spawn {
+        def n as int init serve($srv, $replies);
+        httpd.shutdown($srv);
+        return $n;
+    };
+    def o as escl.Options;
+    $o.timeoutMs = 5000;
+    def st as escl.Settings init escl.settings();
+    $st.source = escl.FEEDER;
+    $st.resolution = 150;
+    def caught as bool init false;
+    try {
+        scanToPdf(escl.scannerWith(httpd.address($srv), $o), $st, $dir + "/out.pdf");
+    } catch (e) {
+        $caught = true;
+        testing.assertEqual($e.kind, "net");
+        def ne as net.NetError init $e;
+        testing.assertEqual($ne.reason, "refused");
+        testing.assertContains($ne.message, "cancelling the job failed too");
+        testing.assertContains($ne.message, "1 of the 1 scanned page(s) were kept as");
+    }
+    testing.assertTrue($caught);
+    testing.assertEqual(task.waitTimeout($t, 10000), 4);
+    testing.assertFalse(fs.exists($dir + "/out.pdf"));
+    testing.assertEqual(fs.readBytes($dir + "/out-001.jpg"), $one);
 }
 
 func testKeptPagesTakeFreeNames() {
