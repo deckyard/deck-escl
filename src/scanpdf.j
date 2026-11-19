@@ -301,6 +301,19 @@ func points(pixels as int, resolution as int) {
     return $p;
 }
 
+# passOn rethrows what the pdf module reports in a generic kind instead of
+# letting the caller turn it into "escl": a reached cap stays "limit", with the
+# page in front of its message; "timeout", "closed" and "cancelled" go on as
+# they are (deckyard's rule: generic kinds pass on). Anything else returns.
+func passOn(e as Error, context as string) {
+    if ($e.kind == "limit") {
+        failLimit($context + clip($e.message));
+    }
+    if ($e.kind == "timeout" or $e.kind == "closed" or $e.kind == "cancelled") {
+        throw $e;
+    }
+}
+
 /**
  * One PDF of these pages, in order, each page as large as the area scanned.
  *
@@ -308,6 +321,7 @@ func points(pixels as int, resolution as int) {
  * @param resolution {int} the dpi they were scanned at, 1 to 10000
  * @return {bytes} the PDF file
  * @throws {Error} kind "escl" if there are no pages, a page is not JPEG or PNG, or the PDF cannot be built
+ * @throws {Error} kind "limit" if a page is past a cap (escl's own header budgets, or the pdf module's)
  * @example
  *   def doc as bytes init scanpdf.build(escl.scan($s, $st), $st.resolution);
  */
@@ -340,6 +354,7 @@ export func build(pages as list of escl.Page, resolution as int) {
         try {
             $img = pdf.loadImage("P{$n}", $pages[$i].data);
         } catch (e) {
+            passOn($e, "page {$n} cannot go into a PDF: ");
             fail("page {$n} cannot go into a PDF: " + clip($e.message));
         }
         # straight into the document: a list set at the end would hold every
@@ -351,6 +366,7 @@ export func build(pages as list of escl.Page, resolution as int) {
     try {
         $out = pdf.render($doc);
     } catch (e) {
+        passOn($e, "cannot render the PDF: ");
         fail("cannot render the PDF: " + clip($e.message));
     }
     return $out;

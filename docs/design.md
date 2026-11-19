@@ -79,7 +79,10 @@ retryAfterMs}`:
 
 A reached cap is kind `"limit"`: the element, text and item caps of the XML
 reader, `maxPages`, `maxJobBytes`, a body over its cap, and the PNG chunk and
-JPEG segment caps in `scanpdf`. Malformed mDNS names stay `"escl"`.
+JPEG segment caps in `scanpdf`, and a cap the `pdf` module reports while
+`scanpdf` binds or renders the pages (with the page in front of its message).
+A `"timeout"`, `"closed"` or `"cancelled"` from `pdf` goes on unchanged; only
+its own `"pdf"` errors become `"escl"`. Malformed mDNS names stay `"escl"`.
 
 A network failure (refused, reset, unreachable, DNS, TLS) is the
 `net.NetError` (kind `"net"`) that `net` threw, with its `op`, `reason`,

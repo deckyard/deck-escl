@@ -692,3 +692,33 @@ func testARethrownEsclErrorKeepsItsFields() {
         testing.assertEqual($e.retryAfterMs, 2000);
     }
 }
+
+# passOn throws calls whose name a test passes to assertThrows.
+func passOnLimit() {
+    passOn(Error{kind: "limit", message: "loadImage: 'P1' is too large"}, "page 1: ");
+}
+func passOnTimeout() {
+    passOn(Error{kind: "timeout", message: "slow"}, "page 1: ");
+}
+
+# What the pdf module reports in a generic kind keeps that kind: a cap stays
+# "limit" (with the page in front), a timeout goes on unchanged, and only the
+# module's own kinds are left for build to turn into "escl".
+func testPdfErrorsInAGenericKindPassOn() {
+    testing.assertThrows("passOnLimit", "limit");
+    def msg as string init "";
+    try {
+        passOnLimit();
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertEqual($msg, "escl: page 1: loadImage: 'P1' is too large");
+    testing.assertThrows("passOnTimeout", "timeout");
+    def left as bool init true;
+    try {
+        passOn(Error{kind: "pdf", message: "malformed"}, "page 1: ");
+    } catch (e) {
+        $left = false;
+    }
+    testing.assertTrue($left);
+}
