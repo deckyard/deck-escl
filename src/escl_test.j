@@ -2180,15 +2180,20 @@ func testPageContentTypeIsChecked() {
         bytes: 0,
         platen: false
     };
+    # Refused by escl's own check, or before it by an http module that rejects
+    # control characters in a header (after Jennifer 0.26.0); either way kind
+    # "escl", and the escape sequence never reaches the message.
+    def kind as string init "";
     def msg as string init "";
     try {
         nextPage($job);
     } catch (e) {
+        $kind = $e.kind;
         $msg = $e.message;
     }
     task.waitTimeout($t, 10000);
     net.close($l);
-    testing.assertContains($msg, "page 1 has a malformed Content-Type");
+    testing.assertEqual($kind, "escl");
     testing.assertFalse(strings.contains($msg, "\u001b"));
 }
 
