@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * White-box tests for escl: jennifer test src/escl_test.j
@@ -184,7 +184,7 @@ func serve(srv as httpd.Server, replies as list of Canned) {
             method: httpd.method($req),
             path: httpd.path($req),
             auth: httpd.header($req, "Authorization"),
-            body: convert.stringFromBytes("utf-8", httpd.body($req))
+            body: encoding.decode("utf-8", httpd.body($req))
         };
         if ($r.contentType != "") {
             httpd.setHeader($req, "Content-Type", $r.contentType);
@@ -255,7 +255,7 @@ func on(f as Fake) {
  * @return {bytes} its UTF-8
  */
 func utf8(text as string) {
-    return convert.bytesFromString("utf-8", $text);
+    return encoding.encode("utf-8", $text);
 }
 
 /**
@@ -721,7 +721,7 @@ func testScanPlaten() {
     def seen as list of Seen init stopFake($f);
     testing.assertEqual(len($pages), 1);
     testing.assertEqual($pages[0].contentType, "image/jpeg");
-    testing.assertEqual(convert.stringFromBytes("utf-8", $pages[0].data), "JPEG-1");
+    testing.assertEqual(encoding.decode("utf-8", $pages[0].data), "JPEG-1");
     def calls as list of string init [];
     for (def s in $seen) {
         $calls[] = $s.method + " " + $s.path;
@@ -753,7 +753,7 @@ func testScanFeederDuplex() {
     def pages as list of Page init scan(on($f), feederSettings(true));
     def seen as list of Seen init stopFake($f);
     testing.assertEqual(len($pages), 2);
-    testing.assertEqual(convert.stringFromBytes("utf-8", $pages[1].data), "back");
+    testing.assertEqual(encoding.decode("utf-8", $pages[1].data), "back");
     testing.assertEqual($seen[1].path, "/eSCL/ScannerStatus");
     testing.assertContains($seen[2].body, "<scan:Duplex>true</scan:Duplex>");
 }
@@ -928,17 +928,17 @@ func closedAddress() {
 func readRequest(conn as net.Conn) {
     def got as string init "";
     while (not strings.contains($got, "\r\n\r\n")) {
-        $got = $got + convert.stringFromBytes("utf-8", net.readBytes($conn, 4096));
+        $got = $got + encoding.decode("utf-8", net.readBytes($conn, 4096));
     }
-    def head as string init strings.substring($got, 0, strings.indexOf($got, "\r\n\r\n") + 4);
+    def head as string init $got[..strings.indexOf($got, "\r\n\r\n") + 4];
     def want as int init 0;
     for (def line in strings.split(strings.lower($head), "\r\n")) {
         if (strings.startsWith($line, "content-length:")) {
-            $want = convert.toInt(strings.trim(strings.substring($line, 15)));
+            $want = convert.toInt(strings.trim($line[15..]));
         }
     }
-    def body as int init len(convert.bytesFromString("utf-8", $got)) -
-        len(convert.bytesFromString("utf-8", $head));
+    def body as int init len(encoding.encode("utf-8", $got)) -
+        len(encoding.encode("utf-8", $head));
     while ($body < $want) {
         $body = $body + len(net.readBytes($conn, 4096));
     }
@@ -964,7 +964,7 @@ func vanishingScanner(server as net.Listener, replies as list of Canned) {
         if ($r.location != "") {
             $head = $head + "Location: {$r.location}\r\n";
         }
-        net.writeBytes($conn, convert.bytesFromString("utf-8", $head + "\r\n"));
+        net.writeBytes($conn, encoding.encode("utf-8", $head + "\r\n"));
         net.writeBytes($conn, $r.body);
         net.close($conn);
     }
@@ -1026,7 +1026,7 @@ func testScanToFiles() {
     def files as list of string init scanToFiles(on($f), feederSettings(false), $dir, "letter");
     stopFake($f);
     testing.assertEqual($files, [$dir + "/letter-001.jpg", $dir + "/letter-002.jpg"]);
-    testing.assertEqual(convert.stringFromBytes("utf-8", fs.readBytes($files[1])), "two");
+    testing.assertEqual(encoding.decode("utf-8", fs.readBytes($files[1])), "two");
 
     # the first name is taken: refused before any job
     def g as Fake init fake([xmlReply(EPSON_CAPS)]);
@@ -1139,7 +1139,7 @@ func testHugeAreaIsAnEsclErrorNotAnOverflow() {
 }
 
 func testDeviceTextInErrorsIsClipped() {
-    def tag as string init strings.repeat("x", 500);
+    def tag as string init strings.replicate("x", 500);
     def msg as string init "";
     try {
         parseStatus("<" + $tag + "/>");
@@ -1557,7 +1557,7 @@ func testImageInfo() {
  * @param n {int} its number
  */
 func checkPage(p as Page, n as int) {
-    testing.assertEqual(convert.stringFromBytes("utf-8", $p.data), "page{$n}");
+    testing.assertEqual(encoding.decode("utf-8", $p.data), "page{$n}");
 }
 
 /**
@@ -1645,7 +1645,7 @@ func testNetworkTextCannotDriveATerminal() {
 
 func testLongTxtValuesAreNotCut() {
     def empty as Records init Records{ptrs: [], srvs: {}, txts: {}, addrs: {}, count: 0};
-    def rs as string init strings.repeat("a", 120);
+    def rs as string init strings.replicate("a", 120);
     def found as list of Found init assemble(absorb($empty, scannerAnswer("S", $rs)));
     testing.assertEqual($found[0].root, $rs);
     testing.assertEqual($found[0].url, "http://10.0.0.9:80/" + $rs);
@@ -1926,7 +1926,7 @@ func testHostileCapabilitiesFailFast() {
     def bulk as string init strings.replace(
         EPSON_CAPS,
         "<AdfOptions>",
-        "<x>" + strings.repeat("<y/>", 12000) + "</x><AdfOptions>");
+        "<x>" + strings.replicate("<y/>", 12000) + "</x><AdfOptions>");
     def cases as map of string to string init {};
     $cases[$many] = "a list has more than 256 entries";
     $cases[$bulk] = "ScannerCapabilities has more than 10000 elements";
@@ -2016,7 +2016,7 @@ func answerLate(srv as httpd.Server, ms as int) {
 func testDeadlineEndsASlowRequest() {
     def srv as httpd.Server init httpd.listen("127.0.0.1:0");
     def t as task of int init spawn {
-        return answerLate($srv, 1500);
+        return answerLate($srv, 700);
     };
     def o as Options;
     $o.deadlineMs = 200;
@@ -2037,7 +2037,8 @@ func testDeadlineEndsASlowRequest() {
     testing.assertEqual($kind, "timeout");
     testing.assertTrue(strings.startsWith($msg, "escl: GET "));
     testing.assertContains($msg, "no complete reply within 200 ms (Options.deadlineMs)");
-    testing.assertTrue($took < 1000);
+    # cut at the deadline, well before the 700 ms answer
+    testing.assertTrue($took < 500);
     # a fast reply within the deadline is untouched
     def srv2 as httpd.Server init httpd.listen("127.0.0.1:0");
     def t2 as task of int init spawn {
@@ -2053,7 +2054,7 @@ func testDeadlineEndsASlowRequest() {
 func testAStalledReadIsATimeout() {
     def srv as httpd.Server init httpd.listen("127.0.0.1:0");
     def t as task of int init spawn {
-        return answerLate($srv, 1500);
+        return answerLate($srv, 500);
     };
     def o as Options;
     $o.timeoutMs = 200;
@@ -2108,7 +2109,7 @@ func testHostNamesAreChecked() {
 }
 
 func testMalformedXmlErrorsAreClipped() {
-    def junk as string init "&\u009b[2J\n\nFAKE" + strings.repeat("A", 2000) + ";";
+    def junk as string init "&\u009b[2J\n\nFAKE" + strings.replicate("A", 2000) + ";";
     def msg as string init "";
     try {
         parseCapabilities("<ScannerCapabilities><a>" + $junk + "</a></ScannerCapabilities>");
@@ -2122,7 +2123,7 @@ func testMalformedXmlErrorsAreClipped() {
 }
 
 func testLongDeviceTextIsRefused() {
-    def long as string init strings.repeat("M", 1025);
+    def long as string init strings.replicate("M", 1025);
     def caps as string init strings.replace(HP_CAPS, "HP LaserJet MFP M28w", $long);
     testing.assertTrue(strings.contains($caps, $long));
     def msg as string init "";
@@ -2139,7 +2140,7 @@ func testLongDeviceTextIsRefused() {
         parseCapabilities(strings.replace(
             HP_CAPS,
             "HP LaserJet MFP M28w",
-            strings.repeat("M", 4000000) + "&#x85;"));
+            strings.replicate("M", 4000000) + "&#x85;"));
     } catch (e) {
         $msg = $e.message;
     }
@@ -2355,7 +2356,7 @@ func testALoopOfYourOwnCountsAndFinishes() {
 }
 
 func testAHostileDocumentIsRefusedBeforeItIsParsed() {
-    def doc as string init "<ScannerCapabilities>" + strings.repeat("<a/>", 1000000) +
+    def doc as string init "<ScannerCapabilities>" + strings.replicate("<a/>", 1000000) +
         "</ScannerCapabilities>";
     def t0 as time.Time init time.now();
     def msg as string init "";
@@ -2373,7 +2374,7 @@ func testAHostileDocumentIsRefusedBeforeItIsParsed() {
     # under the text count but over the tree count: refused while walking
     $msg = "";
     try {
-        parseCapabilities("<ScannerCapabilities>" + strings.repeat("<a/>", 10001) +
+        parseCapabilities("<ScannerCapabilities>" + strings.replicate("<a/>", 10001) +
             "</ScannerCapabilities>");
     } catch (e) {
         $msg = $e.message;
@@ -2488,7 +2489,7 @@ func rawCapture(l as net.Listener, reply as string) {
     def got as bytes init net.readBytes($c, 65536);
     net.writeBytes($c, utf8($reply));
     net.close($c);
-    return convert.stringFromBytes("utf-8", $got);
+    return encoding.decode("utf-8", $got);
 }
 
 func testHostReachesTheWire() {
@@ -2523,7 +2524,7 @@ func testAnAnswerOverTheLabelBudgetIsSkipped() {
     def t as task of bytes init spawn {
         return respondMdns($sock, $packets);
     };
-    def found as list of Found init discoverAt(net.address($sock), 1000);
+    def found as list of Found init discoverAt(net.address($sock), 500);
     task.wait($t);
     net.close($sock);
     testing.assertEqual(len($found), 1);

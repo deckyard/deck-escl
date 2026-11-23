@@ -147,10 +147,10 @@ treated as untrusted.
 
 ## Dependencies on the interpreter
 
-Floor `>=0.26.0`, capability `net`. It relies on changes on `jennifer`'s
-main branch that ship with 0.26.0: `convert.bytesFromString` and
-`stringFromBytes` taking the codec first, `fs.writeNew` taking bytes and
-refusing links, and `http` sending a caller's `Host` header. From the
+Floor `>=0.27.0`, capability `net`, for the UTF-8 codecs of
+`encoding.encode` / `decode` and `strings.replicate`. From 0.26.0 it relies
+on `fs.writeNew` taking bytes and refusing links, and `http` sending a
+caller's `Host` header. From the
 milestones: M28.56 (a thrown module struct keeps its identity, found by this
 deck), M28.57 (the error conventions) and M28.65 (transport failures as
 `net.NetError`, passed on).

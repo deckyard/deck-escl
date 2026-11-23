@@ -34,7 +34,7 @@ escl.scanToFiles($s, $st, "/srv/scans", "letter");
 
 ## Requirements
 
-Jennifer 0.26.0 or newer, the default binary (the deck needs `net`; it does
+Jennifer 0.27.0 or newer, the default binary (the deck needs `net`; it does
 not run on `jennifer-tiny`), and a scanner that speaks eSCL on the network.
 
 ## Development

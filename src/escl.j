@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 # pragma-jennifer-capability: net
 
 /**
@@ -19,6 +19,7 @@
  * @module escl
  */
 use convert;
+use encoding;
 use fs;
 use lists;
 use maps;
@@ -533,7 +534,7 @@ func clip(s as string) {
     def n as int init 0;
     def head as string init $s;
     if (len($head) > 81) {
-        $head = strings.substring($head, 0, 81);
+        $head = $head[..81];
     }
     for (def c in strings.chars($head)) {
         if ($n == 80) {
@@ -573,7 +574,7 @@ func cut(s as string, n as int) {
     if (len($s) <= $n) {
         return $s;
     }
-    return strings.substring($s, 0, $n) + "...";
+    return $s[..$n] + "...";
 }
 
 /**
@@ -631,10 +632,10 @@ func digits(s as string, what as string) {
 func bare(path as string) {
     def p as string init $path;
     while (strings.startsWith($p, "/")) {
-        $p = strings.substring($p, 1);
+        $p = $p[1..];
     }
     while (strings.endsWith($p, "/")) {
-        $p = strings.substring($p, 0, len($p) - 1);
+        $p = $p[..len($p) - 1];
     }
     return $p;
 }
@@ -670,9 +671,9 @@ export func scannerWith(address as string, options as Options) {
     def scheme as string init "http";
     if (strings.startsWith(strings.lower($rest), "https://")) {
         $scheme = "https";
-        $rest = strings.substring($rest, 8);
+        $rest = $rest[8..];
     } elseif (strings.startsWith(strings.lower($rest), "http://")) {
-        $rest = strings.substring($rest, 7);
+        $rest = $rest[7..];
     } elseif (strings.contains($rest, "://")) {
         fail("the address must be http or https, got " + shownAddress($address));
     }
@@ -685,8 +686,8 @@ export func scannerWith(address as string, options as Options) {
     def hostPort as string init $rest;
     def slash as int init strings.indexOf($rest, "/");
     if ($slash >= 0) {
-        $hostPort = strings.substring($rest, 0, $slash);
-        def p as string init bare(strings.substring($rest, $slash));
+        $hostPort = $rest[..$slash];
+        def p as string init bare($rest[$slash..]);
         if ($p != "") {
             $path = "/" + $p;
         }
@@ -703,22 +704,22 @@ export func scannerWith(address as string, options as Options) {
         if ($close < 0) {
             fail("unclosed [ in " + shownAddress($address));
         }
-        $host = strings.substring($hostPort, 0, $close + 1);
-        def after as string init strings.substring($hostPort, $close + 1);
+        $host = $hostPort[..$close + 1];
+        def after as string init $hostPort[$close + 1..];
         if ($after != "") {
             if (not strings.startsWith($after, ":")) {
                 fail("unexpected text after ] in " + shownAddress($address));
             }
-            $port = strings.substring($after, 1);
+            $port = $after[1..];
         }
-        if (not onlyOf(strings.substring($host, 1, len($host) - 1), "0123456789abcdefABCDEF:.")) {
+        if (not onlyOf($host[1..len($host) - 1], "0123456789abcdefABCDEF:.")) {
             fail("malformed IPv6 host in " + shownAddress($address));
         }
     } else {
         def colon as int init strings.indexOf($hostPort, ":");
         if ($colon >= 0) {
-            $host = strings.substring($hostPort, 0, $colon);
-            $port = strings.substring($hostPort, $colon + 1);
+            $host = $hostPort[..$colon];
+            $port = $hostPort[$colon + 1..];
         }
         if (not hostName($host)) {
             fail("malformed host in " + shownAddress($address));
@@ -750,7 +751,7 @@ func shownAddress(address as string) {
     if ($at < 0) {
         return shown($address);
     }
-    return shown("...@" + strings.substring($address, $at + 1));
+    return shown("...@" + $address[$at + 1..]);
 }
 
 /**
@@ -764,7 +765,7 @@ func shownAddress(address as string) {
 func hostName(host as string) {
     def h as string init $host;
     if (strings.endsWith($h, ".")) {
-        $h = strings.substring($h, 0, len($h) - 1);
+        $h = $h[..len($h) - 1];
     }
     if ($h == "" or len($h) > 253) {
         return false;
@@ -857,9 +858,9 @@ func jobUrl(s as Scanner, location as string) {
         if ($at < 0) {
             fail("the job location has no path: " + shown($location));
         }
-        $loc = strings.substring($loc, $at);
+        $loc = $loc[$at..];
     } elseif ($loc != "" and not strings.startsWith($loc, "/")) {
-        $loc = strings.substring($s.base, len($s.origin)) + "/" + $loc;
+        $loc = $s.base[len($s.origin)..] + "/" + $loc;
     }
     $loc = bare($loc);
     if ($loc == "") {
@@ -975,13 +976,13 @@ func authority(url as string) {
     if (strings.startsWith(strings.lower($url), "https://")) {
         $port = "443";
     }
-    def rest as string init strings.substring($url, strings.indexOf($url, "://") + 3);
+    def rest as string init $url[strings.indexOf($url, "://") + 3..];
     def slash as int init strings.indexOf($rest, "/");
     if ($slash >= 0) {
-        $rest = strings.substring($rest, 0, $slash);
+        $rest = $rest[..$slash];
     }
     def close as int init strings.lastIndexOf($rest, "]");
-    if (strings.indexOf(strings.substring($rest, $close + 1), ":") >= 0) {
+    if (strings.indexOf($rest[$close + 1..], ":") >= 0) {
         return $rest;
     }
     return $rest + ":" + $port;
@@ -1079,7 +1080,7 @@ func sendPatiently(s as Scanner, method as string, url as string, body as string
 func textOf(r as Reply, what as string) {
     def s as string init "";
     try {
-        $s = convert.stringFromBytes("utf-8", $r.body);
+        $s = encoding.decode("utf-8", $r.body);
     } catch (e) {
         fail("{$what}: the reply is not UTF-8 text");
     }
@@ -1098,7 +1099,7 @@ func detail(r as Reply) {
     }
     def s as string init "";
     try {
-        $s = strings.trim(convert.stringFromBytes("utf-8", $r.body));
+        $s = strings.trim(encoding.decode("utf-8", $r.body));
     } catch (e) {
         return "";
     }
@@ -1206,7 +1207,7 @@ func local(node as xml.Value) {
     if ($colon < 0) {
         return $tag;
     }
-    return strings.substring($tag, $colon + 1);
+    return $tag[$colon + 1..];
 }
 
 /**
@@ -1533,7 +1534,7 @@ func signedAt(node as xml.Value, name as string) {
     }
     def t as string init textAt($node, $name);
     if (strings.startsWith($t, "-")) {
-        return -digits(strings.substring($t, 1), "<{$name}>");
+        return -digits($t[1..], "<{$name}>");
     }
     return digits($t, "<{$name}>");
 }
@@ -1998,7 +1999,7 @@ func mediaType(contentType as string) {
     def t as string init $contentType;
     def semi as int init strings.indexOf($t, ";");
     if ($semi >= 0) {
-        $t = strings.substring($t, 0, $semi);
+        $t = $t[..$semi];
     }
     return strings.lower(strings.trim($t));
 }
@@ -2093,7 +2094,7 @@ func uriPath(uri as string) {
     if ($at < 0) {
         return "";
     }
-    return strings.substring($u, $at);
+    return $u[$at..];
 }
 
 /**
@@ -2108,7 +2109,7 @@ func uriPath(uri as string) {
  * @throws {Error} kind "escl" if the scanner aborted or cancelled it, or it gave no pages
  */
 export func finish(job as Job) {
-    def path as string init bare(strings.substring($job.url, len($job.scanner.origin)));
+    def path as string init bare($job.url[len($job.scanner.origin)..]);
     def st as Status;
     def known as bool init true;
     try {
@@ -2517,7 +2518,7 @@ func discoverAt(target as string, timeoutMs as int) {
         fail("mDNS query to {$target}: " + clip($e.message));
     }
     def recs as Records init Records{ptrs: [], srvs: {}, txts: {}, addrs: {}, count: 0};
-    def port as string init strings.substring($target, strings.lastIndexOf($target, ":") + 1);
+    def port as string init $target[strings.lastIndexOf($target, ":") + 1..];
     def began as time.Time init time.now();
     while (true) {
         def left as int init $timeoutMs - time.milliseconds(time.sub(time.now(), $began));
@@ -2564,7 +2565,7 @@ func discoverAt(target as string, timeoutMs as int) {
  */
 func putName(out as bytes, name as string) {
     for (def label in strings.split($name, ".")) {
-        def b as bytes init convert.bytesFromString("utf-8", $label);
+        def b as bytes init encoding.encode("utf-8", $label);
         $out[] = len($b);
         for (def i in 0..len($b)) {
             $out[] = $b[$i];
@@ -2622,7 +2623,7 @@ func u16(msg as bytes, at as int) {
 func utf8At(msg as bytes, from as int, end as int) {
     def s as string init "";
     try {
-        $s = convert.stringFromBytes("utf-8", $msg[$from..$end]);
+        $s = encoding.decode("utf-8", $msg[$from..$end]);
     } catch (e) {
         fail("mDNS: text that is not UTF-8");
     }
@@ -2749,8 +2750,8 @@ func readTxt(msg as bytes, at as int, end as int) {
         $pos = $pos + 1 + $l;
         def eq as int init strings.indexOf($entry, "=");
         if ($eq > 0) {
-            $lines[] = strings.lower(strings.substring($entry, 0, $eq)) + "=" +
-                strings.substring($entry, $eq + 1);
+            $lines[] = strings.lower($entry[..$eq]) + "=" +
+                $entry[$eq + 1..];
         }
     }
     return strings.join($lines, "\n");
@@ -2766,7 +2767,7 @@ func readTxt(msg as bytes, at as int, end as int) {
 func txtValue(txt as string, key as string) {
     for (def line in strings.split($txt, "\n")) {
         if (strings.startsWith($line, $key + "=")) {
-            return strings.substring($line, len($key) + 1);
+            return $line[len($key) + 1..];
         }
     }
     return "";
@@ -2858,8 +2859,8 @@ func assemble(recs as Records) {
     for (def pair in $recs.ptrs) {
         # the service never holds a tab; an instance name may
         def tab as int init strings.indexOf($pair, "\t");
-        def service as string init strings.substring($pair, 0, $tab);
-        def instance as string init strings.substring($pair, $tab + 1);
+        def service as string init $pair[..$tab];
+        def instance as string init $pair[$tab + 1..];
         def key as string init strings.lower($instance);
         if (($service != USCAN and $service != USCANS) or not maps.has($recs.srvs, $key)) {
             continue;
@@ -2881,7 +2882,7 @@ func assemble(recs as Records) {
             url: ""
         };
         if (strings.endsWith($key, "." + $service)) {
-            $f.name = strings.substring($instance, 0, len($instance) - len($service) - 1);
+            $f.name = $instance[..len($instance) - len($service) - 1];
         }
         if (maps.has($recs.addrs, $srv.target)) {
             $f.address = $recs.addrs[$srv.target];

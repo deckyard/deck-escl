@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 # pragma-jennifer-capability: net
 
 /**
@@ -13,6 +13,7 @@
  * @module scanpdf
  */
 use convert;
+use encoding;
 use fs;
 use math;
 use net;
@@ -38,8 +39,8 @@ def const MAX_STEMS as int init 99;
 def const CONTROLS as string init '[\x00-\x1f\x7f-\x9f\x{061c}\x{180e}\x{200b}-\x{200f}' +
     '\x{2028}-\x{202e}\x{2060}-\x{2069}\x{feff}]';
 
-def const PNG as bytes init convert.bytesFromString("utf-8", "PNG");
-def const IHDR_BYTES as bytes init convert.bytesFromString("utf-8", "IHDR");
+def const PNG as bytes init encoding.encode("utf-8", "PNG");
+def const IHDR_BYTES as bytes init encoding.encode("utf-8", "IHDR");
 
 # PNG chunk types, as the big-endian numbers their four letters make
 def const IHDR as int init 1229472850;
@@ -129,7 +130,7 @@ func be(data as bytes, at as int, count as int, n as int) {
 func clip(s as string) {
     def t as string init $s;
     if (len($t) > 80) {
-        $t = strings.substring($t, 0, 80) + "...";
+        $t = $t[..80] + "...";
     }
     return regex.replace(CONTROLS, $t, "?");
 }
@@ -539,7 +540,7 @@ func releaseNote(path as string) {
     } catch (e) {
         def why as string init $e.message;
         if (strings.startsWith($why, "escl: ")) {
-            $why = strings.substring($why, 6);
+            $why = $why[6..];
         }
         return "; " + $why;
     }
@@ -563,7 +564,7 @@ func keepNote(pages as list of escl.Page, path as string) {
     }
     def base as string init $path;
     if (strings.endsWith(strings.lower($base), ".pdf")) {
-        $base = strings.substring($base, 0, len($base) - 4);
+        $base = $base[..len($base) - 4];
     }
     def width as int init len(convert.toString(len($pages)));
     if ($width < 3) {

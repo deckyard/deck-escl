@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * White-box tests for scanpdf: jennifer test src/scanpdf_test.j
@@ -73,7 +73,7 @@ func imagePage(format as string, width as int, height as int) {
  * @return {int} the count
  */
 func occurrences(doc as bytes, needle as string) {
-    def n as bytes init convert.bytesFromString("utf-8", $needle);
+    def n as bytes init encoding.encode("utf-8", $needle);
     def count as int init 0;
     def at as int init binary.indexOf($doc, $n);
     while ($at >= 0) {
@@ -86,7 +86,7 @@ func occurrences(doc as bytes, needle as string) {
 func testBuildSizesPagesFromPixelsAndResolution() {
     def jpeg as escl.Page init imagePage("jpeg", 300, 150);
     def doc as bytes init build([$jpeg, imagePage("png", 150, 300)], 150);
-    testing.assertTrue(binary.startsWith($doc, convert.bytesFromString("utf-8", "%PDF-")));
+    testing.assertTrue(binary.startsWith($doc, encoding.encode("utf-8", "%PDF-")));
     testing.assertEqual(occurrences($doc, "/MediaBox [0 0 144 72]"), 1);
     testing.assertEqual(occurrences($doc, "/MediaBox [0 0 72 144]"), 1);
     testing.assertEqual(occurrences($doc, "/DCTDecode"), 1);
@@ -98,12 +98,12 @@ func testBuildRefusesWhatItCannotBind() {
     def pdfPage as escl.Page init escl.Page{
         done: false,
         contentType: "application/pdf",
-        data: convert.bytesFromString("utf-8", "%PDF-1.4")
+        data: encoding.encode("utf-8", "%PDF-1.4")
     };
     def junk as escl.Page init escl.Page{
         done: false,
         contentType: "image/jpeg",
-        data: convert.bytesFromString("utf-8", "not an image at all")
+        data: encoding.encode("utf-8", "not an image at all")
     };
     def none as bytes;
     def end as escl.Page init escl.Page{done: true, contentType: "", data: $none};
@@ -177,15 +177,15 @@ func testScanToPdf() {
     def status as string init "<scan:ScannerStatus xmlns:scan=\"http://schemas.hp.com/imaging/escl/2011/05/03\" " +
         "xmlns:pwg=\"http://www.pwg.org/schemas/2010/12/sm\"><pwg:State>Idle</pwg:State></scan:ScannerStatus>";
     def none as bytes;
-    def x as bytes init convert.bytesFromString("utf-8", "<post/>");
+    def x as bytes init encoding.encode("utf-8", "<post/>");
     def replies as list of bytes init [
-        convert.bytesFromString("utf-8", CAPS),
-        convert.bytesFromString("utf-8", STATUS),
+        encoding.encode("utf-8", CAPS),
+        encoding.encode("utf-8", STATUS),
         $x,
         imagePage("jpeg", 300, 600).data,
         imagePage("jpeg", 300, 600).data,
         $none,
-        convert.bytesFromString("utf-8", $status),
+        encoding.encode("utf-8", $status),
         $none
     ];
     def srv as httpd.Server init httpd.listen("127.0.0.1:0");
@@ -285,7 +285,7 @@ func fakePng(kind as int, interlace as int, extra as string) {
         0,
         0
     ]);
-    def e as bytes init convert.bytesFromString("utf-8", $extra);
+    def e as bytes init encoding.encode("utf-8", $extra);
     for (def i in 0..4) {
         $b[] = $e[$i];
     }
@@ -385,7 +385,7 @@ func testScanToPdfRefusesBeforeScanning() {
 func pngOf(types as list of string) {
     def p as escl.Page init fakePng(2, 0, $types[0]);
     for (def k in 1..len($types)) {
-        def e as bytes init convert.bytesFromString("utf-8", $types[$k]);
+        def e as bytes init encoding.encode("utf-8", $types[$k]);
         for (def i in 0..4) {
             $p.data[] = 0;
         }
@@ -503,15 +503,15 @@ func testScanToPdfKeepsPagesItCannotBind() {
     def status as string init "<scan:ScannerStatus xmlns:scan=\"http://schemas.hp.com/imaging/escl/2011/05/03\" " +
         "xmlns:pwg=\"http://www.pwg.org/schemas/2010/12/sm\"><pwg:State>Idle</pwg:State></scan:ScannerStatus>";
     def none as bytes;
-    def junk as bytes init convert.bytesFromString("utf-8", "not an image");
+    def junk as bytes init encoding.encode("utf-8", "not an image");
     def replies as list of bytes init [
-        convert.bytesFromString("utf-8", CAPS),
-        convert.bytesFromString("utf-8", STATUS),
-        convert.bytesFromString("utf-8", "<post/>"),
+        encoding.encode("utf-8", CAPS),
+        encoding.encode("utf-8", STATUS),
+        encoding.encode("utf-8", "<post/>"),
         imagePage("jpeg", 30, 60).data,
         $junk,
         $none,
-        convert.bytesFromString("utf-8", $status),
+        encoding.encode("utf-8", $status),
         $none
     ];
     def srv as httpd.Server init httpd.listen("127.0.0.1:0");
@@ -540,7 +540,7 @@ func testScanToPdfKeepsPagesItCannotBind() {
 }
 
 /** A reply body the fake answers with HTTP 500. */
-def const FAILURE as bytes init convert.bytesFromString("utf-8", "!");
+def const FAILURE as bytes init encoding.encode("utf-8", "!");
 
 /**
  * Run `scanToPdf` against a fake scanner giving these replies.
@@ -577,9 +577,9 @@ func testScanToPdfKeepsThePagesOfAFailedJob() {
     def none as bytes;
     def msg as string init scanAgainst(
         [
-            convert.bytesFromString("utf-8", CAPS),
-            convert.bytesFromString("utf-8", STATUS),
-            convert.bytesFromString("utf-8", "<post/>"),
+            encoding.encode("utf-8", CAPS),
+            encoding.encode("utf-8", STATUS),
+            encoding.encode("utf-8", "<post/>"),
             $one,
             $one,
             FAILURE,
@@ -599,9 +599,9 @@ func testAScannerThatVanishesIsANetError() {
     defer fs.removeAll($dir);
     def one as bytes init imagePage("jpeg", 30, 60).data;
     def replies as list of bytes init [
-        convert.bytesFromString("utf-8", CAPS),
-        convert.bytesFromString("utf-8", STATUS),
-        convert.bytesFromString("utf-8", "<post/>"),
+        encoding.encode("utf-8", CAPS),
+        encoding.encode("utf-8", STATUS),
+        encoding.encode("utf-8", "<post/>"),
         $one
     ];
     def srv as httpd.Server init httpd.listen("127.0.0.1:0");
@@ -640,13 +640,13 @@ func testKeptPagesTakeFreeNames() {
     def none as bytes;
     def msg as string init scanAgainst(
         [
-            convert.bytesFromString("utf-8", CAPS),
-            convert.bytesFromString("utf-8", STATUS),
-            convert.bytesFromString("utf-8", "<post/>"),
+            encoding.encode("utf-8", CAPS),
+            encoding.encode("utf-8", STATUS),
+            encoding.encode("utf-8", "<post/>"),
             $one,
-            convert.bytesFromString("utf-8", "not an image"),
+            encoding.encode("utf-8", "not an image"),
             $none,
-            convert.bytesFromString("utf-8", STATUS),
+            encoding.encode("utf-8", STATUS),
             $none
         ],
         $dir + "/out.pdf");
