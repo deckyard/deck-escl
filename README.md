@@ -5,7 +5,7 @@
 [![release](https://img.shields.io/github/v/release/deckyard/deck-escl)](https://github.com/deckyard/deck-escl/releases/latest)
 
 A [Jennifer](https://jennifer-lang.dev/) client for eSCL, the driverless scan
-protocol behind AirScan (AirPrint scanning) and Mopria Scan: read what a
+protocol behind AirScan™ (AirPrint™ scanning) and Mopria™ Scan: read what a
 network scanner can do, check settings against it, scan from the glass or the
 feeder (duplex too) and get the pages back or written to files.
 
@@ -45,6 +45,17 @@ jennifer test src/escl_test.j      # the test overlay
 tools/check-docs.sh                  # docs against the code
 tools/pack.sh dist                   # build the release archive
 ```
+
+## Trademarks
+
+AirPrint™ is a trademark of Apple Inc. Mopria™ is a trademark of Mopria
+Alliance, Inc. HP™ and LaserJet™ are trademarks of HP Inc. Epson™ is a
+trademark of Seiko Epson Corporation. Other product and company names may be
+trademarks of their respective owners. They are used only to identify the
+protocols and devices this deck works with; the test fixtures shaped like
+named devices are the deck's own data. This deck is an independent project,
+not affiliated with, sponsored or endorsed by Apple Inc., Mopria Alliance,
+Inc., HP Inc. or Seiko Epson Corporation.
 
 ## Licence
 

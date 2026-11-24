@@ -3,8 +3,8 @@
 
 # @deckyard/escl
 
-A client for eSCL, the driverless scan protocol behind AirScan (AirPrint
-scanning) and Mopria Scan. Most network scanners and multifunction printers
+A client for eSCL, the driverless scan protocol behind AirScan™ (AirPrint™
+scanning) and Mopria™ Scan. Most network scanners and multifunction printers
 made in the last decade speak it: XML documents and image data over HTTP or
 HTTPS, no driver. The deck reads what a scanner can do, checks your settings
 against it, runs the job and hands back the pages, or writes them to files.
@@ -86,6 +86,17 @@ avahi-browse -rt _uscan._tcp
 curl -s http://192.168.1.40:8080/eSCL/ScannerCapabilities | head
 ```
 
-Many devices use port 80; the HP LaserJet M28 series uses 8080. When the
+Many devices use port 80; the HP™ LaserJet™ M28 series uses 8080. When the
 second command prints a `ScannerCapabilities` document, the deck can drive
 the scanner.
+
+## Trademarks
+
+AirPrint™ is a trademark of Apple Inc. Mopria™ is a trademark of Mopria
+Alliance, Inc. HP™ and LaserJet™ are trademarks of HP Inc. Epson™ is a
+trademark of Seiko Epson Corporation. Other product and company names may be
+trademarks of their respective owners. They are used only to identify the
+protocols and devices this deck works with; the test fixtures shaped like
+named devices are the deck's own data. This deck is an independent project,
+not affiliated with, sponsored or endorsed by Apple Inc., Mopria Alliance,
+Inc., HP Inc. or Seiko Epson Corporation.

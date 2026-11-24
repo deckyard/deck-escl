@@ -5,8 +5,8 @@
 
 ## Scope
 
-A client for eSCL, the driverless scan protocol behind AirScan (AirPrint
-scanning) and Mopria Scan: XML documents and image data over HTTP or HTTPS.
+A client for eSCL, the driverless scan protocol behind AirScan™ (AirPrint™
+scanning) and Mopria™ Scan: XML documents and image data over HTTP or HTTPS.
 It finds scanners by mDNS, reads their capabilities and status, checks
 settings against them, runs scan jobs page by page, and writes the pages as
 files or binds them into one PDF.
@@ -130,7 +130,7 @@ treated as untrusted.
   which answers one canned reply per request and fails when a reply was
   never asked for, so a broken flow fails instead of hanging. Discovery is
   tested against a loopback UDP responder.
-- The fixtures imitate an HP LaserJet M28 (platen) and an Epson ES-C380W
+- The fixtures imitate an HP™ LaserJet™ M28 (platen) and an Epson™ ES-C380W
   (feeder, duplex, default namespace). They were written from documentation
   and sane-airscan's notes, not captured from devices.
 - Memory: a page costs about six times its size transiently inside `http`

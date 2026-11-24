@@ -216,7 +216,7 @@ the call then fails with a clear error.
 ## Devices
 
 Every request names the scanner in its `Host` header with the port written
-out (`192.168.1.50:80`): Epson devices refuse a request without it, and the
+out (`192.168.1.50:80`): Epson™ devices refuse a request without it, and the
 others accept it. This needs an interpreter whose `http.j` sends a `Host`
 naming the URL's own host and port as written.
 
@@ -226,6 +226,6 @@ uses the address you gave. Elements are matched by local name, so a device
 using a default namespace instead of the `scan:` / `pwg:` prefixes reads
 the same.
 
-The tests use capability documents shaped like an HP LaserJet M28 (flatbed)
+The tests use capability documents shaped like an HP™ LaserJet™ M28 (flatbed)
 and an Epson document scanner (feeder, simplex and duplex). Reports from
 other devices are welcome.
