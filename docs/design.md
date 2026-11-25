@@ -147,7 +147,7 @@ treated as untrusted.
 
 ## Dependencies on the interpreter
 
-Floor `>=0.27.0`, capability `net`, for the UTF-8 codecs of
+Floor `>=0.28.0` (the calls 0.29.0 removes are replaced by their 0.28.0 forms), capability `net`, for the UTF-8 codecs of
 `encoding.encode` / `decode` and `strings.replicate`. From 0.26.0 it relies
 on `fs.writeNew` taking bytes and refusing links, and `http` sending a
 caller's `Host` header. From the

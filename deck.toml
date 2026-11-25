@@ -1,6 +1,6 @@
 [package]
 name = "@deckyard/escl"
-version = "0.3.1"
+version = "0.4.0"
 description = "Network document scanners over eSCL (AirScan, Mopria): find them, read what they offer, scan to pages, files or PDF"
 license = "LGPL-3.0-only"
 authors = ["mplx <mplx@jennifer-lang.dev>"]
@@ -16,4 +16,4 @@ manual = "https://deckyard.github.io/deck-escl/"
 
 # Only the default binary: `jennifer-tiny` has no `net` capability.
 [engines]
-jennifer = ">=0.27.0"
+jennifer = ">=0.28.0"
