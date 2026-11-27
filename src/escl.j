@@ -18,6 +18,7 @@
  *
  * @module escl
  */
+use binary;
 use convert;
 use encoding;
 use fs;
@@ -2584,17 +2585,15 @@ func putName(out as bytes, name as string) {
  * @return {bytes} the DNS message
  */
 func mdnsQuery() {
-    def q as bytes;
     # id 0, flags 0, two questions, no records
-    for (def b in [0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0]) {
-        $q[] = $b;
-    }
+    def q as bytes init binary.setUint("be", binary.make(12), 4, 2, 2);
     for (def service in [USCAN, USCANS]) {
-        $q = putName($q, $service);
-        # type PTR (12), class IN with the unicast-response bit
-        for (def b in [0, 12, 128, 1]) {
-            $q[] = $b;
-        }
+        # type PTR (12), class IN (1) with the unicast-response bit
+        $q = binary.join([
+            putName($q, $service),
+            binary.fromUint("be", 12, 2),
+            binary.fromUint("be", 0x8001, 2)
+        ]);
     }
     return $q;
 }
@@ -2611,7 +2610,7 @@ func u16(msg as bytes, at as int) {
     if ($at < 0 or $at + 2 > len($msg)) {
         fail("mDNS: truncated message");
     }
-    return $msg[$at] * 256 + $msg[$at + 1];
+    return binary.readUint("be", $msg, $at, 2);
 }
 
 /**

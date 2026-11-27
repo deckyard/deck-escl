@@ -1236,7 +1236,8 @@ func cat(parts as list of bytes) {
 func rr(owner as bytes, kind as int, data as bytes) {
     return cat([
         $owner,
-        raw([0, $kind, 128, 1, 0, 0, 17, 148, len($data) // 256, len($data) % 256]),
+        raw([0, $kind, 128, 1, 0, 0, 17, 148]),
+        binary.fromUint("be", len($data), 2),
         $data
     ]);
 }
@@ -1260,7 +1261,7 @@ func wire(name as string) {
  */
 func answer(records as list of bytes) {
     return cat([
-        raw([0, 0, 132, 0, 0, 0, len($records) // 256, len($records) % 256, 0, 0, 0, 0]),
+        binary.setUint("be", raw([0, 0, 132, 0, 0, 0, 0, 0, 0, 0, 0, 0]), 6, len($records), 2),
         cat($records)
     ]);
 }
@@ -1366,6 +1367,47 @@ func testQueryAsksForUnicastPtrAnswers() {
     testing.assertEqual(u16($q, $first.next), 12);
     testing.assertEqual(u16($q, $first.next + 2), 32769);
     testing.assertEqual(readName($q, $first.next + 4).name, USCANS);
+}
+
+func testU16ReadsBigEndianWithinTheMessage() {
+    testing.assertEqual(u16(raw([1, 2, 255, 254]), 0), 258);
+    testing.assertEqual(u16(raw([1, 2, 255, 254]), 2), 65534);
+    for (def at in [-1, 3, 4]) {
+        def kind as string init "";
+        def msg as string init "";
+        try {
+            u16(raw([1, 2, 255, 254]), $at);
+        } catch (e) {
+            $kind = $e.kind;
+            $msg = $e.message;
+        }
+        testing.assertEqual([$kind, $msg], ["escl", "escl: mDNS: truncated message"]);
+    }
+}
+
+func testTruncatedAnswersAreRefused() {
+    def empty as Records init Records{ptrs: [], srvs: {}, txts: {}, addrs: {}, count: 0};
+    def m as bytes init scannerAnswer("S", "eSCL");
+    def truncated as int init 0;
+    testing.assertEqual(len(absorb($empty, $m).ptrs), 1);
+    # shorter than a header is no answer; every longer prefix is refused
+    testing.assertEqual(absorb($empty, $m[0..11]).count, 0);
+    for (def n in 12..len($m)) {
+        def kind as string init "";
+        def msg as string init "";
+        try {
+            absorb($empty, $m[0..$n]);
+        } catch (e) {
+            $kind = $e.kind;
+            $msg = $e.message;
+        }
+        testing.assertEqual($kind, "escl");
+        testing.assertContains($msg, "escl: mDNS: ");
+        if ($msg == "escl: mDNS: truncated message") {
+            $truncated = $truncated + 1;
+        }
+    }
+    testing.assertTrue($truncated > 0);
 }
 
 func testMalformedAnswersAreRefused() {
@@ -2417,10 +2459,7 @@ func testAbortFoundByAnAbsoluteJobUri() {
  * @return {bytes} the message
  */
 func floodOf(n as int, kind as int) {
-    def m as bytes;
-    for (def b in [0, 0, 132, 0, 0, 0, $n // 256, $n % 256, 0, 0, 0, 0]) {
-        $m[] = $b;
-    }
+    def m as bytes init binary.setUint("be", raw([0, 0, 132, 0, 0, 0, 0, 0, 0, 0, 0, 0]), 6, $n, 2);
     for (def i in 0..127) {
         $m[] = 1;
         $m[] = 97;

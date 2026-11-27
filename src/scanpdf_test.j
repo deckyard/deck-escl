@@ -472,6 +472,68 @@ func testHeaderWalksAreBounded() {
     testing.assertEqual(imageSize(pngOf(["IDAT", "IDAT", "tEXt", "IEND"]).data, 1).width, 256);
 }
 
+func testBeReadsWithinTheImage() {
+    testing.assertEqual(be(raw([1, 2, 3, 4, 5]), 0, 4, 1), 16909060);
+    testing.assertEqual(be(raw([1, 2, 3, 4, 5]), 3, 2, 1), 1029);
+    for (def at in [-1, 2, 4]) {
+        def kind as string init "";
+        def msg as string init "";
+        try {
+            be(raw([1, 2, 3, 4, 5]), $at, 4, 7);
+        } catch (e) {
+            $kind = $e.kind;
+            $msg = $e.message;
+        }
+        testing.assertEqual([$kind, $msg], ["escl", "escl: page 7 is a truncated image"]);
+    }
+}
+
+func testTruncatedImagesAreRefused() {
+    # a PNG and a JPEG whose sizes read; a prefix is refused until it holds
+    # the PNG's IEND type or the JPEG's frame width
+    def png as bytes init pngOf(["IDAT", "IEND"]).data;
+    def jpeg as bytes init raw([
+        255,
+        216,
+        255,
+        224,
+        0,
+        2,
+        255,
+        192,
+        0,
+        11,
+        8,
+        1,
+        44,
+        2,
+        88,
+        1,
+        1,
+        17,
+        0
+    ]);
+    testing.assertEqual(imageSize($png, 1).width, 256);
+    testing.assertEqual([imageSize($jpeg, 1).width, imageSize($jpeg, 1).height], [600, 300]);
+    def images as list of bytes init [$png, $jpeg];
+    def short as list of int init [len($png) - 4, 15];
+    for (def k in 0..2) {
+        def image as bytes init $images[$k];
+        for (def n in 0..$short[$k]) {
+            def kind as string init "";
+            def msg as string init "";
+            try {
+                imageSize($image[0..$n], 1);
+            } catch (e) {
+                $kind = $e.kind;
+                $msg = $e.message;
+            }
+            testing.assertEqual($kind, "escl");
+            testing.assertContains($msg, "escl: page 1 ");
+        }
+    }
+}
+
 func testScanToPdfNeedsAWritablePlaceFirst() {
     def dir as string init fs.makeTempDir();
     defer fs.removeAll($dir);

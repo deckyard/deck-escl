@@ -12,6 +12,7 @@
  *
  * @module scanpdf
  */
+use binary;
 use convert;
 use encoding;
 use fs;
@@ -113,11 +114,7 @@ func be(data as bytes, at as int, count as int, n as int) {
     if ($at < 0 or $at + $count > len($data)) {
         fail("page {$n} is a truncated image");
     }
-    def v as int init 0;
-    for (def i in 0..$count) {
-        $v = $v * 256 + $data[$at + $i];
-    }
-    return $v;
+    return binary.readUint("be", $data, $at, $count);
 }
 
 /**
